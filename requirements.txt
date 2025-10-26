@@ -1,0 +1,66 @@
+
+# ============================================================================
+
+# Core Data Science Libraries
+# ============================================================================
+pandas>=2.0.0              # Data manipulation and analysis
+numpy>=1.24.0              # Numerical computing
+scipy>=1.10.0              # Scientific computing
+
+# Machine Learning
+# ============================================================================
+scikit-learn>=1.3.0        # Machine learning utilities (TF-IDF, metrics, etc.)
+
+
+# Visualization
+# ============================================================================
+matplotlib>=3.7.0          # Plotting library
+seaborn>=0.12.0            # Statistical visualization
+plotly>=5.14.0             # Interactive plots
+
+# Progress Bars and UI
+# ============================================================================
+tqdm>=4.65.0               # Progress bars
+
+# Text Processing
+# ============================================================================
+nltk>=3.8.0                # Natural language processing
+
+# Jupyter Notebook Support
+# ============================================================================
+jupyter>=1.0.0             # Jupyter metapackage
+notebook>=6.5.0            # Jupyter notebook interface
+ipython>=8.12.0            # Interactive Python shell
+ipykernel>=6.22.0          # Jupyter kernel for Python
+ipywidgets>=8.0.0          # Interactive widgets
+
+# Jupyter Extensions (Optional but Recommended)
+# ============================================================================
+jupyterlab>=3.6.0          # Next-generation Jupyter interface
+jupytext>=1.14.0           # Convert between .py and .ipynb
+
+# Data Validation and Utilities
+# ============================================================================
+python-dateutil>=2.8.0     # Date/time parsing
+pyyaml>=6.0                # YAML file support
+python-dotenv>=1.0.0       # Environment variable management
+
+# Graph Analysis (Optional but Recommended)
+# ============================================================================
+networkx>=3.1              # Graph creation and analysis
+
+# ============================================================================
+# Optional: For Advanced Features
+# ============================================================================
+# openpyxl>=3.1.0          # Excel file support
+# xlrd>=2.0.1              # Excel reading
+# beautifulsoup4>=4.12.0   # HTML parsing
+# requests>=2.31.0         # HTTP requests
+
+# ============================================================================
+# Development Tools (Optional)
+# ============================================================================
+# pytest>=7.3.0            # Testing framework
+# black>=23.3.0            # Code formatter
+# flake8>=6.0.0            # Code linter
+# mypy>=1.3.0              # Type checker
