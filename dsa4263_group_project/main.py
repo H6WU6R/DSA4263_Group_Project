@@ -20,6 +20,37 @@ from scipy.stats import entropy
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.feature_extraction.text import TfidfVectorizer
+
+# NLP imports
+import nltk
+from nltk.corpus import stopwords
+from nltk.tokenize import word_tokenize
+from nltk.stem import PorterStemmer, WordNetLemmatizer
+from nltk.sentiment import SentimentIntensityAnalyzer
+
+# Download required NLTK data (quietly)
+try:
+    nltk.download('stopwords', quiet=True)
+    nltk.download('punkt', quiet=True)
+    nltk.download('punkt_tab', quiet=True)
+    nltk.download('wordnet', quiet=True)
+    nltk.download('omw-1.4', quiet=True)
+    nltk.download('vader_lexicon', quiet=True)
+except Exception as e:
+    print(f"⚠️  Warning: Could not download some NLTK data: {e}")
+
+# Initialize NLP tools
+try:
+    STOP_WORDS = set(stopwords.words('english'))
+    STOP_WORDS.update(['re', 'fwd', 'subject', 'email', 'com', 'www'])
+    STEMMER = PorterStemmer()
+    LEMMATIZER = WordNetLemmatizer()
+    SENTIMENT_ANALYZER = SentimentIntensityAnalyzer()
+    HAS_NLP = True
+except Exception as e:
+    print(f"⚠️  Warning: NLP tools not fully available: {e}")
+    HAS_NLP = False
 
 # Optional: seaborn for enhanced visualizations
 try:
@@ -258,9 +289,59 @@ if 'timezone_region' not in df_cleaned.columns:
 
 print(f"\n✅ Data ready for analysis")
 
+# ---------------------------------------------------------------------------
+# 1.2: Text Cleaning (from lzy notebooks)
+# ---------------------------------------------------------------------------
+if HAS_NLP:
+    print("\n[1.2] Applying text preprocessing...")
+    
+    def clean_text(text: str) -> str:
+        """Clean text: lowercase, remove punctuation, tokenize, remove stopwords, lemmatize"""
+        if pd.isna(text) or text == "":
+            return ""
+        
+        # Lowercase
+        text = str(text).lower()
+        
+        # Remove punctuation and numbers
+        text = re.sub(r'[^a-zA-Z\s]', ' ', text)
+        
+        # Remove extra whitespace
+        text = re.sub(r'\s+', ' ', text).strip()
+        
+        # Tokenize
+        try:
+            tokens = word_tokenize(text)
+        except:
+            tokens = text.split()
+        
+        # Remove stopwords
+        tokens = [word for word in tokens if word not in STOP_WORDS and len(word) > 2]
+        
+        # Lemmatize
+        try:
+            tokens = [LEMMATIZER.lemmatize(word) for word in tokens]
+        except:
+            pass
+        
+        return ' '.join(tokens)
+    
+    # Create cleaned text column
+    df_cleaned['subject_clean'] = df_cleaned['subject'].fillna('').apply(clean_text)
+    df_cleaned['body_clean'] = df_cleaned['body'].fillna('').apply(clean_text)
+    df_cleaned['text_combined'] = df_cleaned['subject_clean'] + ' ' + df_cleaned['body_clean']
+    
+    print(f"  ✓ Text preprocessing complete")
+    print(f"  ✓ Sample cleaned text: {df_cleaned['text_combined'].iloc[0][:100]}...")
+else:
+    print("\n[1.2] Skipping text preprocessing (NLTK not available)")
+    df_cleaned['subject_clean'] = df_cleaned['subject'].fillna('')
+    df_cleaned['body_clean'] = df_cleaned['body'].fillna('')
+    df_cleaned['text_combined'] = df_cleaned['subject'] + ' ' + df_cleaned['body']
+
 # %%
 # ============================================================================
-# SECTION 2: EXPLORATORY DATA ANALYSIS (from date_data_EDA.ipynb)
+# SECTION 2: EXPLORATORY DATA ANALYSIS (from date_data_EDA.ipynb + lzy-EDA.ipynb)
 # ============================================================================
 print("\n" + "="*80)
 print(" SECTION 2: EXPLORATORY DATA ANALYSIS")
@@ -394,17 +475,70 @@ def perform_temporal_eda(df: pd.DataFrame, save_path: str) -> Dict:
 # Perform EDA
 eda_insights = perform_temporal_eda(df_cleaned, REPORTS_PATH)
 
+# ---------------------------------------------------------------------------
+# 2.2: Text-based EDA (from lzy-EDA.ipynb)
+# ---------------------------------------------------------------------------
+print("\n[2.2] Analyzing text patterns...")
+
+# Text length analysis
+df_cleaned['subject_length'] = df_cleaned['subject'].fillna('').astype(str).apply(len)
+df_cleaned['body_length'] = df_cleaned['body'].fillna('').astype(str).apply(len)
+df_cleaned['text_length'] = df_cleaned['subject_length'] + df_cleaned['body_length']
+df_cleaned['word_count'] = df_cleaned['text_combined'].apply(lambda x: len(str(x).split()))
+
+print("\n  📝 Text Length Statistics:")
+text_stats = df_cleaned.groupby('label')[['subject_length', 'body_length', 'word_count']].agg(['mean', 'median'])
+print(text_stats)
+
+# Character analysis
+def calculate_uppercase_ratio(text):
+    if pd.isna(text) or len(str(text)) == 0:
+        return 0
+    text = str(text)
+    uppercase = sum(1 for c in text if c.isupper())
+    letters = sum(1 for c in text if c.isalpha())
+    return uppercase / letters if letters > 0 else 0
+
+df_cleaned['uppercase_ratio'] = df_cleaned['text_combined'].apply(calculate_uppercase_ratio)
+df_cleaned['exclamation_count'] = df_cleaned['text_combined'].apply(lambda x: str(x).count('!'))
+df_cleaned['dollar_count'] = df_cleaned['text_combined'].apply(lambda x: str(x).count('$'))
+
+print("\n  🔤 Character Pattern Statistics:")
+char_stats = df_cleaned.groupby('label')[['uppercase_ratio', 'exclamation_count', 'dollar_count']].mean()
+print(char_stats)
+
+# Sentiment analysis (if available)
+if HAS_NLP:
+    try:
+        df_cleaned['subject_sentiment'] = df_cleaned['subject'].fillna('').apply(
+            lambda x: SENTIMENT_ANALYZER.polarity_scores(str(x))['compound']
+        )
+        df_cleaned['body_sentiment'] = df_cleaned['body'].fillna('').apply(
+            lambda x: SENTIMENT_ANALYZER.polarity_scores(str(x))['compound']
+        )
+        
+        print("\n  😊 Sentiment Statistics:")
+        sentiment_stats = df_cleaned.groupby('label')[['subject_sentiment', 'body_sentiment']].mean()
+        print(sentiment_stats)
+    except Exception as e:
+        print(f"\n  ⚠️  Sentiment analysis skipped: {e}")
+        df_cleaned['subject_sentiment'] = 0
+        df_cleaned['body_sentiment'] = 0
+else:
+    df_cleaned['subject_sentiment'] = 0
+    df_cleaned['body_sentiment'] = 0
+
 print("\n✅ EDA complete!")
 
 # %%
 # ============================================================================
 # SECTION 3: FEATURE ENGINEERING (from date_data_feature_engineering.ipynb 
-#            + spam_graph_eda_improved.ipynb)
+#            + spam_graph_eda_improved.ipynb + lzy notebooks)
 # ============================================================================
 print("\n" + "="*80)
 print(" SECTION 3: FEATURE ENGINEERING")
 print("="*80)
-print("  Combining temporal features (YR) + graph features (Wenli)")
+print("  Combining temporal (YR) + graph (Wenli) + text (LZY) features")
 
 # ---------------------------------------------------------------------------
 # 3.1: Temporal Feature Engineering (from YR's notebook)
@@ -465,6 +599,77 @@ def engineer_temporal_features(df: pd.DataFrame, verbose: bool = True) -> pd.Dat
 
 
 df_with_temporal = engineer_temporal_features(df_cleaned, verbose=True)
+
+# ---------------------------------------------------------------------------
+# 3.1b: URL and Domain Features (from lzy notebooks)
+# ---------------------------------------------------------------------------
+print("\n[3.1b] Engineering URL and domain features...")
+
+# URL features
+df_with_temporal['urls'] = df_with_temporal['urls'].fillna(0)
+df_with_temporal['has_url'] = (df_with_temporal['urls'] > 0).astype(int)
+df_with_temporal['urls_log'] = np.log1p(df_with_temporal['urls'])
+
+# Domain features
+df_with_temporal['sender_domain'] = df_with_temporal['sender'].apply(
+    lambda x: str(x).split('@')[-1] if '@' in str(x) else 'unknown'
+)
+
+# Domain statistics (time-aware)
+df_with_temporal = df_with_temporal.sort_values(['sender_domain', 'date']).reset_index(drop=True)
+
+# Domain spam rate (cumulative, excluding current email)
+domain_cumulative_spam = df_with_temporal.groupby('sender_domain')['label'].cumsum() - df_with_temporal['label']
+domain_cumulative_total = df_with_temporal.groupby('sender_domain').cumcount()
+
+df_with_temporal['domain_spam_rate'] = np.where(
+    domain_cumulative_total > 0,
+    domain_cumulative_spam / domain_cumulative_total,
+    0
+)
+
+# Domain frequency
+df_with_temporal['domain_frequency'] = df_with_temporal.groupby('sender_domain').cumcount() + 1
+
+# Suspicious domain flags
+df_with_temporal['is_suspicious_domain'] = (df_with_temporal['domain_spam_rate'] > 0.7).astype(int)
+df_with_temporal['is_rare_domain'] = (df_with_temporal['domain_frequency'] <= 3).astype(int)
+
+# Time-based features
+df_with_temporal['is_night'] = df_with_temporal['hour'].isin(range(22, 24)).astype(int) | \
+                                 df_with_temporal['hour'].isin(range(0, 6)).astype(int)
+
+print(f"  ✓ Added URL features: urls, has_url, urls_log")
+print(f"  ✓ Added domain features: domain_spam_rate, domain_frequency, suspicious/rare flags")
+print(f"  ✓ Added time feature: is_night")
+
+# Text meta-features (already computed in EDA, but ensure they exist)
+if 'special_char_total' not in df_with_temporal.columns:
+    df_with_temporal['special_char_total'] = (
+        df_with_temporal['exclamation_count'] + 
+        df_with_temporal['dollar_count']
+    )
+
+if 'digit_ratio' not in df_with_temporal.columns:
+    def calculate_digit_ratio(text):
+        if pd.isna(text) or len(str(text)) == 0:
+            return 0
+        text = str(text)
+        digits = sum(c.isdigit() for c in text)
+        return digits / len(text)
+    
+    df_with_temporal['digit_ratio'] = df_with_temporal['text_combined'].apply(calculate_digit_ratio)
+
+if 'avg_word_length' not in df_with_temporal.columns:
+    def calculate_avg_word_length(text):
+        words = str(text).split()
+        if len(words) == 0:
+            return 0
+        return sum(len(w) for w in words) / len(words)
+    
+    df_with_temporal['avg_word_length'] = df_with_temporal['text_combined'].apply(calculate_avg_word_length)
+
+print(f"  ✓ Text meta-features: special_char_total, digit_ratio, avg_word_length")
 
 # ---------------------------------------------------------------------------
 # 3.2: Graph Feature Engineering (from Wenli's notebook)
@@ -591,13 +796,30 @@ temporal_features = [
     'sender_email_count', 'time_since_last_email'
 ]
 
+# URL and domain features (from lzy notebooks)
+url_domain_features = [
+    'urls', 'has_url', 'urls_log',
+    'domain_spam_rate', 'is_suspicious_domain', 'domain_frequency', 'is_rare_domain',
+    'is_night'
+]
+
+# Text meta-features (from lzy notebooks)
+text_meta_features = [
+    'subject_length', 'body_length', 'text_length', 'word_count',
+    'uppercase_ratio', 'exclamation_count', 'dollar_count',
+    'special_char_total', 'digit_ratio', 'avg_word_length',
+    'subject_sentiment', 'body_sentiment'
+]
+
 graph_features = [col for col in df_with_all_features.columns if col.startswith('graph_')]
 
-all_ml_features = temporal_features + graph_features
+all_ml_features = temporal_features + url_domain_features + text_meta_features + graph_features
 
 print(f"\n[4.1] Training Random Forest for feature importance...")
 print(f"  Features: {len(all_ml_features)}")
 print(f"    - Temporal: {len(temporal_features)}")
+print(f"    - URL/Domain: {len(url_domain_features)}")
+print(f"    - Text meta: {len(text_meta_features)}")
 print(f"    - Graph: {len(graph_features)}")
 
 # Prepare data
@@ -634,32 +856,44 @@ print(f"\nClassification Report:")
 print(classification_report(y_test, y_pred, target_names=['Legitimate', 'Spam']))
 
 # Feature importance
+feature_types = (
+    ['temporal']*len(temporal_features) + 
+    ['url_domain']*len(url_domain_features) +
+    ['text_meta']*len(text_meta_features) +
+    ['graph']*len(graph_features)
+)
+
 importance_df = pd.DataFrame({
     'feature': all_ml_features,
     'importance': rf.feature_importances_,
-    'type': ['temporal']*len(temporal_features) + ['graph']*len(graph_features)
+    'type': feature_types
 }).sort_values('importance', ascending=False)
 
 print(f"\n{'='*80}")
-print(" TOP 15 FEATURES")
+print(" TOP 20 FEATURES")
 print("="*80)
-print(importance_df.head(15).to_string(index=False))
+print(importance_df.head(20).to_string(index=False))
 
 # Visualize feature importance
 fig, axes = plt.subplots(1, 2, figsize=(16, 6))
 fig.suptitle('Feature Importance Analysis', fontsize=16, fontweight='bold')
 
-# Plot 1: Top 15 features
+# Plot 1: Top 20 features
 ax1 = axes[0]
-top_15 = importance_df.head(15)
-colors_map = {'temporal': 'steelblue', 'graph': 'coral'}
-bar_colors = [colors_map[t] for t in top_15['type']]
+top_20 = importance_df.head(20)
+colors_map = {
+    'temporal': 'steelblue', 
+    'url_domain': 'mediumseagreen',
+    'text_meta': 'mediumpurple',
+    'graph': 'coral'
+}
+bar_colors = [colors_map[t] for t in top_20['type']]
 
-bars = ax1.barh(range(len(top_15)), top_15['importance'].values, color=bar_colors, alpha=0.7)
-ax1.set_yticks(range(len(top_15)))
-ax1.set_yticklabels(top_15['feature'].values)
+bars = ax1.barh(range(len(top_20)), top_20['importance'].values, color=bar_colors, alpha=0.7)
+ax1.set_yticks(range(len(top_20)))
+ax1.set_yticklabels(top_20['feature'].values)
 ax1.set_xlabel('Importance', fontweight='bold')
-ax1.set_title('Top 15 Most Important Features', fontweight='bold')
+ax1.set_title('Top 20 Most Important Features', fontweight='bold')
 ax1.invert_yaxis()
 ax1.grid(axis='x', alpha=0.3)
 
@@ -667,6 +901,8 @@ ax1.grid(axis='x', alpha=0.3)
 from matplotlib.patches import Patch
 legend_elements = [
     Patch(facecolor='steelblue', label='Temporal'),
+    Patch(facecolor='mediumseagreen', label='URL/Domain'),
+    Patch(facecolor='mediumpurple', label='Text Meta'),
     Patch(facecolor='coral', label='Graph')
 ]
 ax1.legend(handles=legend_elements, loc='lower right')
@@ -674,7 +910,7 @@ ax1.legend(handles=legend_elements, loc='lower right')
 # Plot 2: Feature type comparison
 ax2 = axes[1]
 type_importance = importance_df.groupby('type')['importance'].sum()
-colors_pie = ['steelblue', 'coral']
+colors_pie = ['coral', 'steelblue', 'mediumpurple', 'mediumseagreen']
 ax2.pie(type_importance.values, labels=type_importance.index, autopct='%1.1f%%',
         colors=colors_pie, startangle=90, textprops={'fontsize': 12, 'fontweight': 'bold'})
 ax2.set_title('Feature Type Contribution', fontweight='bold')
@@ -701,6 +937,8 @@ print(f"  • Spam rate:              {df_cleaned['label'].mean()*100:.1f}%")
 
 print(f"\n🎯 FEATURES GENERATED:")
 print(f"  • Temporal features:      {len(temporal_features)}")
+print(f"  • URL/Domain features:    {len(url_domain_features)}")
+print(f"  • Text meta features:     {len(text_meta_features)}")
 print(f"  • Graph features:         {len(graph_features)}")
 print(f"  • Total ML features:      {len(all_ml_features)}")
 
@@ -717,8 +955,9 @@ print(f"  • Feature importance:     {importance_file}")
 
 print(f"\n💡 KEY INSIGHTS:")
 print(f"  • Top feature: {importance_df.iloc[0]['feature']} ({importance_df.iloc[0]['type']})")
-print(f"  • Temporal contribution: {type_importance.get('temporal', 0)/type_importance.sum()*100:.1f}%")
-print(f"  • Graph contribution: {type_importance.get('graph', 0)/type_importance.sum()*100:.1f}%")
+print(f"  • Feature type contributions:")
+for ftype in sorted(type_importance.index):
+    print(f"    - {ftype.replace('_', ' ').title()}: {type_importance[ftype]/type_importance.sum()*100:.1f}%")
 
 print("\n" + "="*80)
 print("✅ PIPELINE EXECUTION COMPLETE!")
