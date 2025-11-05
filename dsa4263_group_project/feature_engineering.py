@@ -402,3 +402,215 @@ def prepare_features_with_graph(
         print(f"\n  ⚠️  NOTE: Graph features built ONLY on training data to prevent data leakage!")
     
     return X_train, X_test, y_train, y_test
+
+
+def engineer_temporal_features_leakage_free(
+    df: pd.DataFrame,
+    train_idx: pd.Index,
+    verbose: bool = True
+) -> pd.DataFrame:
+    """
+    Engineer temporal features without data leakage.
+    Risk scores and historical stats are computed ONLY on training data.
+    
+    Args:
+        df: Full dataframe
+        train_idx: Training set indices
+        verbose: Print progress messages
+        
+    Returns:
+        DataFrame with temporal features added
+    """
+    if verbose:
+        print(f"\n[3.1] Engineering temporal features (leakage-free)...")
+    
+    df = df.copy()
+    
+    # Ensure date is datetime
+    if not pd.api.types.is_datetime64_any_dtype(df['date']):
+        df['date'] = pd.to_datetime(df['date'])
+    
+    # Basic temporal features (safe - no leakage)
+    if 'hour' not in df.columns:
+        df['hour'] = df['date'].dt.hour
+    if 'day_of_week' not in df.columns:
+        df['day_of_week'] = df['date'].dt.dayofweek
+    if 'is_weekend' not in df.columns:
+        df['is_weekend'] = df['day_of_week'].isin([5, 6]).astype(int)
+    
+    # === LEAKAGE-FREE RISK SCORES ===
+    # Compute risk scores ONLY on training data
+    train_df = df.loc[train_idx]
+    
+    # Hour risk score (spam rate by hour in training data)
+    hour_spam_rate_train = train_df.groupby('hour')['label'].mean()
+    df['hour_risk_score'] = df['hour'].map(hour_spam_rate_train).fillna(
+        train_df['label'].mean()  # Fill with overall spam rate
+    )
+    
+    # Weekday risk score (spam rate by day of week in training data)
+    weekday_spam_rate_train = train_df.groupby('day_of_week')['label'].mean()
+    df['weekday_risk_score'] = df['day_of_week'].map(weekday_spam_rate_train).fillna(
+        train_df['label'].mean()
+    )
+    
+    # Region risk score (if timezone_region exists)
+    if 'timezone_region' in df.columns:
+        region_spam_rate_train = train_df.groupby('timezone_region')['label'].mean()
+        df['region_risk_score'] = df['timezone_region'].map(region_spam_rate_train).fillna(
+            train_df['label'].mean()
+        )
+        overall_spam_rate = train_df['label'].mean()
+        df['is_high_risk_region'] = (df['region_risk_score'] > overall_spam_rate * 1.2).astype(int)
+    else:
+        df['region_risk_score'] = train_df['label'].mean()
+        df['is_high_risk_region'] = 0
+    
+    # === LEAKAGE-FREE SENDER STATISTICS ===
+    # Sort by date to ensure chronological order
+    df_sorted = df.sort_values('date').copy()
+    
+    # Calculate sender statistics using ONLY training data up to each point
+    sender_stats = {}
+    sender_spam_count = {}
+    sender_total_count = {}
+    sender_last_email = {}
+    
+    for idx in df_sorted.index:
+        sender = df_sorted.loc[idx, 'sender']
+        current_date = df_sorted.loc[idx, 'date']
+        
+        # Only use training data that occurred BEFORE current email
+        if idx in train_idx:
+            # For training data, use historical training data
+            historical_train = train_df[
+                (train_df['sender'] == sender) & 
+                (train_df['date'] < current_date)
+            ]
+        else:
+            # For test data, use ALL training data before current date
+            historical_train = train_df[
+                (train_df['sender'] == sender) & 
+                (train_df['date'] < current_date)
+            ]
+        
+        # Sender historical spam rate
+        if len(historical_train) > 0:
+            spam_rate = historical_train['label'].mean()
+            email_count = len(historical_train)
+        else:
+            spam_rate = train_df['label'].mean()  # Default to overall spam rate
+            email_count = 0
+        
+        df_sorted.loc[idx, 'sender_historical_spam_rate'] = spam_rate
+        df_sorted.loc[idx, 'sender_email_count'] = email_count
+        
+        # Time since last email
+        if len(historical_train) > 0:
+            last_email_date = historical_train['date'].max()
+            time_diff = (current_date - last_email_date).total_seconds() / 3600  # Hours
+            df_sorted.loc[idx, 'time_since_last_email'] = min(time_diff, 168)  # Cap at 1 week
+        else:
+            df_sorted.loc[idx, 'time_since_last_email'] = 168  # Default to 1 week
+    
+    # Merge back to original order
+    df = df.join(df_sorted[['sender_historical_spam_rate', 'sender_email_count', 'time_since_last_email']])
+    
+    if verbose:
+        print(f"  ✓ Created 10 temporal features (leakage-free)")
+        print(f"    - Basic: hour, day_of_week, is_weekend")
+        print(f"    - Risk scores: hour_risk_score, weekday_risk_score, region_risk_score")
+        print(f"    - Sender stats: sender_historical_spam_rate, sender_email_count, time_since_last_email")
+    
+    return df
+
+
+def engineer_url_domain_features_leakage_free(
+    df: pd.DataFrame,
+    train_idx: pd.Index,
+    verbose: bool = True
+) -> pd.DataFrame:
+    """
+    Engineer URL and domain features without data leakage.
+    Domain statistics are computed ONLY on training data.
+    
+    Args:
+        df: Full dataframe
+        train_idx: Training set indices
+        verbose: Print progress messages
+        
+    Returns:
+        DataFrame with URL/domain features added
+    """
+    if verbose:
+        print(f"\n[3.2] Engineering URL/domain features (leakage-free)...")
+    
+    df = df.copy()
+    
+    # URL features (safe - no leakage)
+    df['urls'] = df['urls'].fillna(0)
+    df['has_url'] = (df['urls'] > 0).astype(int)
+    df['urls_log'] = np.log1p(df['urls'])
+    
+    # Time-based feature (safe)
+    if 'hour' in df.columns:
+        df['is_night'] = ((df['hour'] >= 22) | (df['hour'] <= 6)).astype(int)
+    else:
+        df['is_night'] = 0
+    
+    # Extract sender domain
+    df['sender_domain'] = df['sender'].fillna('').astype(str).apply(
+        lambda x: x.split('@')[-1] if '@' in x else 'unknown'
+    )
+    
+    # === LEAKAGE-FREE DOMAIN STATISTICS ===
+    # Compute domain stats ONLY on training data
+    train_df = df.loc[train_idx]
+    
+    # Sort by date for chronological processing
+    df_sorted = df.sort_values('date').copy()
+    train_df_sorted = train_df.sort_values('date')
+    
+    # Calculate domain statistics using cumulative training data
+    for idx in df_sorted.index:
+        domain = df_sorted.loc[idx, 'sender_domain']
+        current_date = df_sorted.loc[idx, 'date']
+        
+        if idx in train_idx:
+            # For training data, use historical training data
+            historical_domain = train_df_sorted[
+                (train_df_sorted['sender_domain'] == domain) & 
+                (train_df_sorted['date'] < current_date)
+            ]
+        else:
+            # For test data, use ALL training data before current date
+            historical_domain = train_df_sorted[
+                (train_df_sorted['sender_domain'] == domain) & 
+                (train_df_sorted['date'] < current_date)
+            ]
+        
+        # Domain spam rate
+        if len(historical_domain) > 0:
+            spam_rate = historical_domain['label'].mean()
+            frequency = len(historical_domain)
+        else:
+            spam_rate = 0.5  # Unknown domain
+            frequency = 0
+        
+        df_sorted.loc[idx, 'domain_spam_rate'] = spam_rate
+        df_sorted.loc[idx, 'domain_frequency'] = frequency
+    
+    # Merge back
+    df = df.join(df_sorted[['domain_spam_rate', 'domain_frequency']])
+    
+    # Derived features
+    df['is_suspicious_domain'] = (df['domain_spam_rate'] > 0.7).astype(int)
+    df['is_rare_domain'] = (df['domain_frequency'] <= 5).astype(int)
+    
+    if verbose:
+        print(f"  ✓ Created 8 URL/domain features (leakage-free)")
+        print(f"    - URL: urls, has_url, urls_log")
+        print(f"    - Domain: domain_spam_rate, is_suspicious_domain, domain_frequency, is_rare_domain")
+        print(f"    - Time: is_night")
+    
+    return df
