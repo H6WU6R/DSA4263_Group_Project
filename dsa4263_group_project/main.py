@@ -19,8 +19,34 @@ from scipy import stats
 from scipy.stats import entropy
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.metrics import classification_report, confusion_matrix, accuracy_score, precision_score, recall_score, f1_score
 from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.linear_model import LogisticRegression
+from sklearn.naive_bayes import MultinomialNB
+
+# Try to import advanced models (optional)
+try:
+    from lightgbm import LGBMClassifier
+    HAS_LGBM = True
+except ImportError:
+    print("⚠️  LightGBM not available")
+    HAS_LGBM = False
+
+try:
+    from xgboost import XGBClassifier
+    HAS_XGB = True
+except ImportError:
+    print("⚠️  XGBoost not available")
+    HAS_XGB = False
+
+# Hyperparameter tuning
+try:
+    from sklearn.model_selection import RandomizedSearchCV
+    from scipy.stats import uniform, randint
+    HAS_TUNING = True
+except ImportError:
+    print("⚠️  RandomizedSearchCV not available")
+    HAS_TUNING = False
 
 # NLP imports
 import nltk
@@ -674,15 +700,8 @@ print(f"  ✓ Text meta-features: special_char_total, digit_ratio, avg_word_leng
 # ---------------------------------------------------------------------------
 # 3.2: Graph Feature Engineering (from Wenli's notebook)
 # ---------------------------------------------------------------------------
-def engineer_graph_features(df: pd.DataFrame, verbose: bool = True) -> pd.DataFrame:
-    """
-    Extract graph-based network features for each sender.
-    """
-    if verbose:
-        print("\n[3.2] Engineering graph features...")
-        print("  ⏳ Building email network graph...")
-    
-    # Build directed graph
+def build_graph_from_data(df: pd.DataFrame) -> nx.DiGraph:
+    """Build directed graph from email data."""
     G = nx.DiGraph()
     
     for idx, row in df.iterrows():
@@ -700,27 +719,48 @@ def engineer_graph_features(df: pd.DataFrame, verbose: bool = True) -> pd.DataFr
                        spam_count=is_spam,
                        ham_count=1-is_spam)
     
+    return G
+
+
+def extract_graph_features_for_senders(senders: pd.Series, G: nx.DiGraph, verbose: bool = False) -> pd.DataFrame:
+    """
+    Extract graph-based network features for given senders using a pre-built graph.
+    This prevents data leakage by allowing us to build the graph only on training data.
+    """
     if verbose:
-        print(f"  ✓ Graph built: {G.number_of_nodes():,} nodes, {G.number_of_edges():,} edges")
-        print("  ⏳ Extracting graph features...")
+        print(f"  ⏳ Extracting graph features for {len(senders.unique())} unique senders...")
     
     # Pre-calculate metrics
     out_degrees = dict(G.out_degree())
     in_degrees = dict(G.in_degree())
+    pagerank = nx.pagerank(G, max_iter=50)
+    clustering = nx.clustering(G.to_undirected())
+    n_nodes = G.number_of_nodes()
     
     sender_graph_features = []
     
-    for sender in df['sender'].unique():
+    for sender in senders.unique():
         if sender not in G:
+            # Sender not in training graph - use default values
+            sender_graph_features.append({
+                'sender': sender,
+                'graph_out_degree': 0,
+                'graph_in_degree': 0,
+                'graph_reciprocity': 0,
+                'graph_total_sent': 0,
+                'graph_pagerank': 0,
+                'graph_clustering': 0,
+                'graph_degree_centrality': 0,
+                'graph_avg_weight': 0,
+            })
             continue
         
         out_deg = out_degrees.get(sender, 0)
-        if out_deg == 0:
-            continue
         
         # Basic metrics
         receivers = list(G.successors(sender))
         reciprocity = sum([1 for r in receivers if G.has_edge(r, sender)]) / len(receivers) if receivers else 0
+        avg_weight = np.mean([G[sender][r]['weight'] for r in receivers]) if receivers else 0
         
         sender_graph_features.append({
             'sender': sender,
@@ -728,67 +768,36 @@ def engineer_graph_features(df: pd.DataFrame, verbose: bool = True) -> pd.DataFr
             'graph_in_degree': in_degrees.get(sender, 0),
             'graph_reciprocity': reciprocity,
             'graph_total_sent': len(receivers),
+            'graph_pagerank': pagerank.get(sender, 0),
+            'graph_clustering': clustering.get(sender, 0),
+            'graph_degree_centrality': out_deg / (n_nodes - 1) if n_nodes > 1 else 0,
+            'graph_avg_weight': avg_weight,
         })
     
-    graph_df = pd.DataFrame(sender_graph_features)
-    
-    # Advanced features
-    if verbose:
-        print("  ⏳ Calculating PageRank & clustering...")
-    
-    pagerank = nx.pagerank(G, max_iter=50)
-    clustering = nx.clustering(G.to_undirected())
-    
-    graph_df['graph_pagerank'] = graph_df['sender'].map(pagerank).fillna(0)
-    graph_df['graph_clustering'] = graph_df['sender'].map(clustering).fillna(0)
-    graph_df['graph_degree_centrality'] = graph_df['graph_out_degree'] / (G.number_of_nodes() - 1)
-    graph_df['graph_avg_weight'] = graph_df['sender'].apply(
-        lambda s: np.mean([G[s][r]['weight'] for r in G.successors(s)]) if s in G and G.out_degree(s) > 0 else 0
-    )
-    
-    if verbose:
-        print(f"  ✓ Added {8} graph features")
-        print(f"    - Degree, reciprocity, PageRank, clustering, centrality")
-    
-    return graph_df
+    return pd.DataFrame(sender_graph_features)
 
 
-graph_features_df = engineer_graph_features(df_with_temporal, verbose=True)
-
-# Merge graph features back to main dataframe
-df_with_all_features = df_with_temporal.merge(
-    graph_features_df,
-    on='sender',
-    how='left'
-)
-
-# Fill NaN values for senders not in graph
-graph_cols = [col for col in df_with_all_features.columns if col.startswith('graph_')]
-df_with_all_features[graph_cols] = df_with_all_features[graph_cols].fillna(0)
-
+# Note: Graph features will be added AFTER train/test split to prevent data leakage
+# For now, save the temporal and text features
 print("\n" + "─"*80)
-print(" FEATURE ENGINEERING SUMMARY")
+print(" FEATURE ENGINEERING SUMMARY (Temporal & Text)")
 print("─"*80)
-print(f"  Temporal features: 7")
-print(f"  Graph features: 8")
-print(f"  Total engineered features: 15")
-print(f"  Total columns: {df_with_all_features.shape[1]}")
+print(f"  Temporal features: 10")
+print(f"  URL/Domain features: 8")
+print(f"  Text meta features: 12")
+print(f"  Graph features: Will be added after train/test split (to prevent leakage)")
+print(f"  Total columns so far: {df_with_temporal.shape[1]}")
 print("─"*80)
-
-# Save engineered features
-engineered_file = os.path.join(DATA_PROCESSED_PATH, "engineered_features.csv")
-df_with_all_features.to_csv(engineered_file, index=False)
-print(f"\n✅ Engineered features saved to: {engineered_file}")
 
 # %%
 # ============================================================================
-# SECTION 4: FEATURE IMPORTANCE ANALYSIS
+# SECTION 4: MODEL TRAINING & COMPARISON (from all notebooks)
 # ============================================================================
 print("\n" + "="*80)
-print(" SECTION 4: FEATURE IMPORTANCE ANALYSIS")
+print(" SECTION 4: MODEL TRAINING & COMPARISON")
 print("="*80)
 
-# Select ML features
+# Select ML features (non-graph first)
 temporal_features = [
     'hour', 'day_of_week', 'is_weekend',
     'hour_risk_score', 'weekday_risk_score', 'region_risk_score',
@@ -811,61 +820,432 @@ text_meta_features = [
     'subject_sentiment', 'body_sentiment'
 ]
 
-graph_features = [col for col in df_with_all_features.columns if col.startswith('graph_')]
+# Graph features (will be added after split to prevent leakage)
+graph_feature_names = [
+    'graph_out_degree', 'graph_in_degree', 'graph_reciprocity', 'graph_total_sent',
+    'graph_pagerank', 'graph_clustering', 'graph_degree_centrality', 'graph_avg_weight'
+]
 
-all_ml_features = temporal_features + url_domain_features + text_meta_features + graph_features
-
-print(f"\n[4.1] Training Random Forest for feature importance...")
-print(f"  Features: {len(all_ml_features)}")
+print(f"\n[4.1] Preparing data for model training...")
+print(f"  Features (before graph): {len(temporal_features) + len(url_domain_features) + len(text_meta_features)}")
 print(f"    - Temporal: {len(temporal_features)}")
 print(f"    - URL/Domain: {len(url_domain_features)}")
 print(f"    - Text meta: {len(text_meta_features)}")
-print(f"    - Graph: {len(graph_features)}")
 
-# Prepare data
-X = df_with_all_features[all_ml_features].fillna(0)
-y = df_with_all_features['label']
+# First split the data WITHOUT graph features (to prevent leakage)
+non_graph_features = temporal_features + url_domain_features + text_meta_features
+X_temp = df_with_temporal[non_graph_features].fillna(0)
+y = df_with_temporal['label']
 
 # Split data
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.3, random_state=42, stratify=y
+X_train_temp, X_test_temp, y_train, y_test, train_idx, test_idx = train_test_split(
+    X_temp, y, df_with_temporal.index, test_size=0.3, random_state=42, stratify=y
 )
 
-print(f"\n  Train set: {len(X_train):,} samples")
-print(f"  Test set:  {len(X_test):,} samples")
+print(f"\n  Train set: {len(X_train_temp):,} samples")
+print(f"  Test set:  {len(X_test_temp):,} samples")
 
-# Train Random Forest
+# Now build graph features ONLY on training data
+print(f"\n[4.2] Building graph features (training data only)...")
+train_df = df_with_temporal.iloc[train_idx].copy()
+test_df = df_with_temporal.iloc[test_idx].copy()
+
+print(f"  ⏳ Building email network graph from training data...")
+G_train = build_graph_from_data(train_df)
+print(f"  ✓ Training graph: {G_train.number_of_nodes():,} nodes, {G_train.number_of_edges():,} edges")
+
+# Extract graph features for training data
+train_graph_features = extract_graph_features_for_senders(train_df['sender'], G_train, verbose=True)
+train_df_with_graph = train_df.merge(train_graph_features, on='sender', how='left')
+
+# Extract graph features for test data (using TRAINING graph to prevent leakage)
+test_graph_features = extract_graph_features_for_senders(test_df['sender'], G_train, verbose=True)
+test_df_with_graph = test_df.merge(test_graph_features, on='sender', how='left')
+
+# Fill any remaining NaN values
+graph_cols = [col for col in train_df_with_graph.columns if col.startswith('graph_')]
+train_df_with_graph[graph_cols] = train_df_with_graph[graph_cols].fillna(0)
+test_df_with_graph[graph_cols] = test_df_with_graph[graph_cols].fillna(0)
+
+# Prepare final feature matrices
+all_ml_features = temporal_features + url_domain_features + text_meta_features + graph_feature_names
+
+X_train = train_df_with_graph[all_ml_features].fillna(0)
+X_test = test_df_with_graph[all_ml_features].fillna(0)
+
+print(f"\n  ✓ Final feature count: {len(all_ml_features)}")
+print(f"    - Temporal: {len(temporal_features)}")
+print(f"    - URL/Domain: {len(url_domain_features)}")
+print(f"    - Text meta: {len(text_meta_features)}")
+print(f"    - Graph: {len(graph_feature_names)}")
+print(f"\n  ⚠️  NOTE: Graph features built ONLY on training data to prevent data leakage!")
+
+# Store model results
+model_results = []
+
+# ---------------------------------------------------------------------------
+# 4.3: Hyperparameter Tuning (Optional - from lzy notebook)
+# ---------------------------------------------------------------------------
+ENABLE_TUNING = True  # Set to False to skip tuning and use default params
+
+if ENABLE_TUNING and HAS_TUNING:
+    print(f"\n[4.3] Hyperparameter Tuning (RandomizedSearchCV)...")
+    print(f"  ⏳ This may take a few minutes...")
+    
+    # Define parameter distributions for each model
+    rf_param_dist = {
+        'n_estimators': [50, 100, 150, 200],
+        'max_depth': [10, 15, 20, 25, None],
+        'min_samples_split': [2, 5, 10],
+        'min_samples_leaf': [1, 2, 4],
+        'class_weight': ['balanced', 'balanced_subsample']
+    }
+    
+    xgb_param_dist = {
+        'n_estimators': [50, 100, 150, 200],
+        'max_depth': [5, 7, 10, 15],
+        'learning_rate': [0.01, 0.05, 0.1, 0.2],
+        'subsample': [0.6, 0.8, 1.0],
+        'colsample_bytree': [0.6, 0.8, 1.0]
+    } if HAS_XGB else None
+    
+    lgbm_param_dist = {
+        'n_estimators': [50, 100, 150, 200],
+        'max_depth': [5, 7, 10, 15],
+        'learning_rate': [0.01, 0.05, 0.1, 0.2],
+        'num_leaves': [20, 31, 50],
+        'subsample': [0.6, 0.8, 1.0]
+    } if HAS_LGBM else None
+    
+    # Tune Random Forest
+    print(f"\n  [4.3.1] Tuning Random Forest...")
+    rf_random = RandomizedSearchCV(
+        RandomForestClassifier(random_state=42, n_jobs=-1),
+        param_distributions=rf_param_dist,
+        n_iter=10,  # Number of parameter settings sampled
+        cv=3,
+        scoring='f1',
+        random_state=42,
+        n_jobs=-1,
+        verbose=0
+    )
+    rf_random.fit(X_train, y_train)
+    best_rf_params = rf_random.best_params_
+    print(f"    ✓ Best params: {best_rf_params}")
+    print(f"    ✓ Best CV F1-Score: {rf_random.best_score_:.4f}")
+    
+    # Tune XGBoost (if available)
+    if HAS_XGB:
+        print(f"\n  [4.3.2] Tuning XGBoost...")
+        xgb_random = RandomizedSearchCV(
+            XGBClassifier(random_state=42, tree_method='hist', n_jobs=-1),
+            param_distributions=xgb_param_dist,
+            n_iter=10,
+            cv=3,
+            scoring='f1',
+            random_state=42,
+            n_jobs=-1,
+            verbose=0
+        )
+        xgb_random.fit(X_train, y_train)
+        best_xgb_params = xgb_random.best_params_
+        print(f"    ✓ Best params: {best_xgb_params}")
+        print(f"    ✓ Best CV F1-Score: {xgb_random.best_score_:.4f}")
+    else:
+        best_xgb_params = None
+    
+    # Tune LightGBM (if available)
+    if HAS_LGBM:
+        print(f"\n  [4.3.3] Tuning LightGBM...")
+        lgbm_random = RandomizedSearchCV(
+            LGBMClassifier(random_state=42, n_jobs=-1, verbose=-1),
+            param_distributions=lgbm_param_dist,
+            n_iter=10,
+            cv=3,
+            scoring='f1',
+            random_state=42,
+            n_jobs=-1,
+            verbose=0
+        )
+        lgbm_random.fit(X_train, y_train)
+        best_lgbm_params = lgbm_random.best_params_
+        print(f"    ✓ Best params: {best_lgbm_params}")
+        print(f"    ✓ Best CV F1-Score: {lgbm_random.best_score_:.4f}")
+    else:
+        best_lgbm_params = None
+    
+    print(f"\n  ✅ Hyperparameter tuning complete! Using tuned parameters for training.")
+else:
+    print(f"\n[4.3] Skipping hyperparameter tuning (using default parameters)...")
+    best_rf_params = {
+        'n_estimators': 100,
+        'max_depth': 15,
+        'min_samples_split': 2,
+        'min_samples_leaf': 1,
+        'class_weight': 'balanced'
+    }
+    best_xgb_params = {
+        'n_estimators': 100,
+        'max_depth': 7,
+        'learning_rate': 0.1,
+        'subsample': 1.0,
+        'colsample_bytree': 1.0
+    } if HAS_XGB else None
+    best_lgbm_params = {
+        'n_estimators': 100,
+        'max_depth': 7,
+        'learning_rate': 0.1,
+        'num_leaves': 31,
+        'subsample': 1.0
+    } if HAS_LGBM else None
+
+# ---------------------------------------------------------------------------
+# Model 1: Random Forest (baseline from existing pipeline)
+# ---------------------------------------------------------------------------
+print(f"\n[4.4] Training Model 1: Random Forest (with tuned params)...")
+import time
+start_time = time.time()
+
 rf = RandomForestClassifier(
-    n_estimators=100,
-    max_depth=15,
+    **best_rf_params,
     random_state=42,
-    n_jobs=-1,
-    class_weight='balanced'
+    n_jobs=-1
 )
 rf.fit(X_train, y_train)
+y_pred_rf = rf.predict(X_test)
 
-# Evaluate
-y_pred = rf.predict(X_test)
-accuracy = (y_pred == y_test).mean()
+rf_time = time.time() - start_time
+
+rf_results = {
+    'Model': 'Random Forest',
+    'Accuracy': accuracy_score(y_test, y_pred_rf),
+    'Precision': precision_score(y_test, y_pred_rf),
+    'Recall': recall_score(y_test, y_pred_rf),
+    'F1-Score': f1_score(y_test, y_pred_rf),
+    'Training Time (s)': rf_time
+}
+model_results.append(rf_results)
+
+print(f"  ✓ Accuracy:  {rf_results['Accuracy']:.4f}")
+print(f"  ✓ F1-Score:  {rf_results['F1-Score']:.4f}")
+print(f"  ✓ Time:      {rf_time:.2f}s")
+
+# ---------------------------------------------------------------------------
+# Model 2: Logistic Regression (from lzy notebook)
+# ---------------------------------------------------------------------------
+print(f"\n[4.5] Training Model 2: Logistic Regression...")
+start_time = time.time()
+
+lr = LogisticRegression(
+    max_iter=1000,
+    solver='saga',
+    penalty='l2',
+    C=1.0,
+    random_state=42,
+    n_jobs=-1
+)
+lr.fit(X_train, y_train)
+y_pred_lr = lr.predict(X_test)
+
+lr_time = time.time() - start_time
+
+lr_results = {
+    'Model': 'Logistic Regression',
+    'Accuracy': accuracy_score(y_test, y_pred_lr),
+    'Precision': precision_score(y_test, y_pred_lr),
+    'Recall': recall_score(y_test, y_pred_lr),
+    'F1-Score': f1_score(y_test, y_pred_lr),
+    'Training Time (s)': lr_time
+}
+model_results.append(lr_results)
+
+print(f"  ✓ Accuracy:  {lr_results['Accuracy']:.4f}")
+print(f"  ✓ F1-Score:  {lr_results['F1-Score']:.4f}")
+print(f"  ✓ Time:      {lr_time:.2f}s")
+
+# ---------------------------------------------------------------------------
+# Model 3: Naive Bayes (from lzy notebook - with sparse data handling)
+# ---------------------------------------------------------------------------
+print(f"\n[4.6] Training Model 3: Naive Bayes...")
+start_time = time.time()
+
+# Naive Bayes requires non-negative features - shift if needed
+X_train_nb = X_train.copy()
+X_test_nb = X_test.copy()
+
+# Shift negative features to make them positive
+min_vals = X_train_nb.min()
+for col in X_train_nb.columns:
+    if min_vals[col] < 0:
+        shift = abs(min_vals[col]) + 0.01
+        X_train_nb[col] += shift
+        X_test_nb[col] += shift
+
+nb = MultinomialNB(alpha=0.1)
+nb.fit(X_train_nb, y_train)
+y_pred_nb = nb.predict(X_test_nb)
+
+nb_time = time.time() - start_time
+
+nb_results = {
+    'Model': 'Naive Bayes',
+    'Accuracy': accuracy_score(y_test, y_pred_nb),
+    'Precision': precision_score(y_test, y_pred_nb),
+    'Recall': recall_score(y_test, y_pred_nb),
+    'F1-Score': f1_score(y_test, y_pred_nb),
+    'Training Time (s)': nb_time
+}
+model_results.append(nb_results)
+
+print(f"  ✓ Accuracy:  {nb_results['Accuracy']:.4f}")
+print(f"  ✓ F1-Score:  {nb_results['F1-Score']:.4f}")
+print(f"  ✓ Time:      {nb_time:.2f}s")
+
+# ---------------------------------------------------------------------------
+# Model 4: LightGBM (from lzy notebook - if available)
+# ---------------------------------------------------------------------------
+if HAS_LGBM:
+    print(f"\n[4.7] Training Model 4: LightGBM (with tuned params)...")
+    start_time = time.time()
+    
+    lgbm = LGBMClassifier(
+        **best_lgbm_params,
+        random_state=42,
+        n_jobs=-1,
+        verbose=-1
+    )
+    lgbm.fit(X_train, y_train)
+    y_pred_lgbm = lgbm.predict(X_test)
+    
+    lgbm_time = time.time() - start_time
+    
+    lgbm_results = {
+        'Model': 'LightGBM',
+        'Accuracy': accuracy_score(y_test, y_pred_lgbm),
+        'Precision': precision_score(y_test, y_pred_lgbm),
+        'Recall': recall_score(y_test, y_pred_lgbm),
+        'F1-Score': f1_score(y_test, y_pred_lgbm),
+        'Training Time (s)': lgbm_time
+    }
+    model_results.append(lgbm_results)
+    
+    print(f"  ✓ Accuracy:  {lgbm_results['Accuracy']:.4f}")
+    print(f"  ✓ F1-Score:  {lgbm_results['F1-Score']:.4f}")
+    print(f"  ✓ Time:      {lgbm_time:.2f}s")
+else:
+    print(f"\n[4.7] Skipping LightGBM (not installed)")
+    y_pred_lgbm = None
+
+# ---------------------------------------------------------------------------
+# Model 5: XGBoost (from lzy notebook - if available)
+# ---------------------------------------------------------------------------
+if HAS_XGB:
+    print(f"\n[4.8] Training Model 5: XGBoost (with tuned params)...")
+    start_time = time.time()
+    
+    xgb = XGBClassifier(
+        **best_xgb_params,
+        tree_method='hist',
+        random_state=42,
+        n_jobs=-1
+    )
+    xgb.fit(X_train, y_train)
+    y_pred_xgb = xgb.predict(X_test)
+    
+    xgb_time = time.time() - start_time
+    
+    xgb_results = {
+        'Model': 'XGBoost',
+        'Accuracy': accuracy_score(y_test, y_pred_xgb),
+        'Precision': precision_score(y_test, y_pred_xgb),
+        'Recall': recall_score(y_test, y_pred_xgb),
+        'F1-Score': f1_score(y_test, y_pred_xgb),
+        'Training Time (s)': xgb_time
+    }
+    model_results.append(xgb_results)
+    
+    print(f"  ✓ Accuracy:  {xgb_results['Accuracy']:.4f}")
+    print(f"  ✓ F1-Score:  {xgb_results['F1-Score']:.4f}")
+    print(f"  ✓ Time:      {xgb_time:.2f}s")
+else:
+    print(f"\n[4.8] Skipping XGBoost (not installed)")
+    y_pred_xgb = None
+
+# ---------------------------------------------------------------------------
+# Model Comparison Summary
+# ---------------------------------------------------------------------------
+print(f"\n{'='*80}")
+print(" MODEL COMPARISON RESULTS")
+print("="*80)
+
+results_df = pd.DataFrame(model_results)
+print(results_df.to_string(index=False))
+
+# Best model
+best_idx = results_df['F1-Score'].idxmax()
+best_model = results_df.iloc[best_idx]
 
 print(f"\n{'='*80}")
-print(" MODEL PERFORMANCE")
+print(" BEST MODEL")
 print("="*80)
-print(f"\nAccuracy: {accuracy*100:.2f}%")
-print(f"\nClassification Report:")
-print(classification_report(y_test, y_pred, target_names=['Legitimate', 'Spam']))
+print(f"  Model:      {best_model['Model']}")
+print(f"  Accuracy:   {best_model['Accuracy']:.4f}")
+print(f"  Precision:  {best_model['Precision']:.4f}")
+print(f"  Recall:     {best_model['Recall']:.4f}")
+print(f"  F1-Score:   {best_model['F1-Score']:.4f}")
+print(f"  Time:       {best_model['Training Time (s)']:.2f}s")
 
-# Feature importance
+# Use best model for feature importance (if it's Random Forest)
+if best_model['Model'] == 'Random Forest':
+    print(f"\n✅ Using Random Forest for feature importance analysis")
+    best_model_obj = rf
+    y_pred_best = y_pred_rf
+elif best_model['Model'] == 'LightGBM' and HAS_LGBM:
+    print(f"\n✅ Using LightGBM for feature importance analysis")
+    best_model_obj = lgbm
+    y_pred_best = y_pred_lgbm
+elif best_model['Model'] == 'XGBoost' and HAS_XGB:
+    print(f"\n✅ Using XGBoost for feature importance analysis")
+    best_model_obj = xgb
+    y_pred_best = y_pred_xgb
+else:
+    # Fallback to Random Forest
+    print(f"\n✅ Using Random Forest for feature importance analysis (fallback)")
+    best_model_obj = rf
+    y_pred_best = y_pred_rf
+
+print(f"\n{'='*80}")
+print(" DETAILED CLASSIFICATION REPORT (BEST MODEL)")
+print("="*80)
+print(classification_report(y_test, y_pred_best, target_names=['Legitimate', 'Spam']))
+
+# ---------------------------------------------------------------------------
+# Feature Importance Analysis
+# ---------------------------------------------------------------------------
+print(f"\n{'='*80}")
+print(" FEATURE IMPORTANCE ANALYSIS")
+print("="*80)
+
 feature_types = (
     ['temporal']*len(temporal_features) + 
     ['url_domain']*len(url_domain_features) +
     ['text_meta']*len(text_meta_features) +
-    ['graph']*len(graph_features)
+    ['graph']*len(graph_feature_names)
 )
+
+# Get feature importance from best model
+if hasattr(best_model_obj, 'feature_importances_'):
+    feature_importances = best_model_obj.feature_importances_
+elif hasattr(best_model_obj, 'coef_'):
+    # For linear models, use absolute coefficients
+    feature_importances = np.abs(best_model_obj.coef_[0])
+else:
+    # Fallback: use Random Forest
+    feature_importances = rf.feature_importances_
 
 importance_df = pd.DataFrame({
     'feature': all_ml_features,
-    'importance': rf.feature_importances_,
+    'importance': feature_importances,
     'type': feature_types
 }).sort_values('importance', ascending=False)
 
@@ -918,7 +1298,85 @@ ax2.set_title('Feature Type Contribution', fontweight='bold')
 plt.tight_layout()
 importance_file = os.path.join(REPORTS_PATH, 'feature_importance_analysis.png')
 plt.savefig(importance_file, dpi=300, bbox_inches='tight')
-print(f"\n✅ Visualization saved to: {importance_file}")
+print(f"\n✅ Feature importance visualization saved to: {importance_file}")
+plt.close()
+
+# ---------------------------------------------------------------------------
+# Model Comparison Visualization
+# ---------------------------------------------------------------------------
+print(f"\n{'='*80}")
+print(" MODEL COMPARISON VISUALIZATION")
+print("="*80)
+
+fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+fig.suptitle('Model Comparison Analysis', fontsize=16, fontweight='bold')
+
+# Plot 1: Accuracy Comparison
+ax1 = axes[0, 0]
+models = [r['Model'] for r in model_results]
+accuracies = [r['Accuracy'] for r in model_results]
+colors_acc = plt.cm.viridis(np.linspace(0.3, 0.9, len(models)))
+bars = ax1.bar(range(len(models)), accuracies, color=colors_acc, alpha=0.7)
+ax1.set_xticks(range(len(models)))
+ax1.set_xticklabels(models, rotation=45, ha='right')
+ax1.set_ylabel('Accuracy')
+ax1.set_title('Accuracy by Model')
+ax1.set_ylim([min(accuracies)*0.95, 1.0])
+ax1.grid(axis='y', alpha=0.3)
+# Highlight best
+best_acc_idx = accuracies.index(max(accuracies))
+bars[best_acc_idx].set_edgecolor('red')
+bars[best_acc_idx].set_linewidth(3)
+for i, v in enumerate(accuracies):
+    ax1.text(i, v + 0.005, f'{v:.3f}', ha='center', va='bottom', fontsize=9, fontweight='bold')
+
+# Plot 2: F1-Score Comparison
+ax2 = axes[0, 1]
+f1_scores = [r['F1-Score'] for r in model_results]
+bars = ax2.bar(range(len(models)), f1_scores, color=colors_acc, alpha=0.7)
+ax2.set_xticks(range(len(models)))
+ax2.set_xticklabels(models, rotation=45, ha='right')
+ax2.set_ylabel('F1-Score')
+ax2.set_title('F1-Score by Model')
+ax2.set_ylim([min(f1_scores)*0.95, 1.0])
+ax2.grid(axis='y', alpha=0.3)
+# Highlight best
+best_f1_idx = f1_scores.index(max(f1_scores))
+bars[best_f1_idx].set_edgecolor('red')
+bars[best_f1_idx].set_linewidth(3)
+for i, v in enumerate(f1_scores):
+    ax2.text(i, v + 0.005, f'{v:.3f}', ha='center', va='bottom', fontsize=9, fontweight='bold')
+
+# Plot 3: Precision vs Recall
+ax3 = axes[1, 0]
+precisions = [r['Precision'] for r in model_results]
+recalls = [r['Recall'] for r in model_results]
+for i, (p, r, model) in enumerate(zip(precisions, recalls, models)):
+    ax3.scatter(r, p, s=200, alpha=0.6, c=[colors_acc[i]], label=model)
+    ax3.annotate(model, (r, p), xytext=(5, 5), textcoords='offset points', fontsize=8)
+ax3.set_xlabel('Recall')
+ax3.set_ylabel('Precision')
+ax3.set_title('Precision vs Recall Trade-off')
+ax3.grid(alpha=0.3)
+ax3.set_xlim([min(recalls)*0.95, 1.0])
+ax3.set_ylim([min(precisions)*0.95, 1.0])
+
+# Plot 4: Training Time Comparison
+ax4 = axes[1, 1]
+times = [r['Training Time (s)'] for r in model_results]
+bars = ax4.bar(range(len(models)), times, color=colors_acc, alpha=0.7)
+ax4.set_xticks(range(len(models)))
+ax4.set_xticklabels(models, rotation=45, ha='right')
+ax4.set_ylabel('Training Time (seconds)')
+ax4.set_title('Training Time by Model')
+ax4.grid(axis='y', alpha=0.3)
+for i, v in enumerate(times):
+    ax4.text(i, v + max(times)*0.02, f'{v:.2f}s', ha='center', va='bottom', fontsize=9, fontweight='bold')
+
+plt.tight_layout()
+model_comparison_file = os.path.join(REPORTS_PATH, 'model_comparison_analysis.png')
+plt.savefig(model_comparison_file, dpi=300, bbox_inches='tight')
+print(f"✅ Model comparison visualization saved to: {model_comparison_file}")
 plt.close()
 
 # %%
@@ -931,7 +1389,8 @@ print("="*80)
 
 print(f"\n📊 DATA STATISTICS:")
 print(f"  • Input emails:           {len(df_cleaned):,}")
-print(f"  • With engineered features: {len(df_with_all_features):,}")
+print(f"  • Training set:           {len(X_train):,}")
+print(f"  • Test set:               {len(X_test):,}")
 print(f"  • Unique senders:         {df_cleaned['sender'].nunique():,}")
 print(f"  • Spam rate:              {df_cleaned['label'].mean()*100:.1f}%")
 
@@ -939,25 +1398,36 @@ print(f"\n🎯 FEATURES GENERATED:")
 print(f"  • Temporal features:      {len(temporal_features)}")
 print(f"  • URL/Domain features:    {len(url_domain_features)}")
 print(f"  • Text meta features:     {len(text_meta_features)}")
-print(f"  • Graph features:         {len(graph_features)}")
+print(f"  • Graph features:         {len(graph_feature_names)}")
 print(f"  • Total ML features:      {len(all_ml_features)}")
+print(f"  • ⚠️  Graph features prevent data leakage (built on training data only)")
 
 print(f"\n🏆 MODEL PERFORMANCE:")
-print(f"  • Accuracy:               {accuracy*100:.2f}%")
+print(f"  • Best Model:             {best_model['Model']}")
+print(f"  • Accuracy:               {best_model['Accuracy']*100:.2f}%")
+print(f"  • F1-Score:               {best_model['F1-Score']:.4f}")
 print(f"  • Training set:           {len(X_train):,}")
 print(f"  • Test set:               {len(X_test):,}")
+print(f"  • Models trained:         {len(model_results)}")
 
 print(f"\n📁 OUTPUT FILES:")
 print(f"  • Source data:            {data_file}")
-print(f"  • Engineered features:    {engineered_file}")
 print(f"  • EDA visualization:      {os.path.join(REPORTS_PATH, 'temporal_eda_analysis.png')}")
 print(f"  • Feature importance:     {importance_file}")
+print(f"  • Model comparison:       {model_comparison_file}")
 
 print(f"\n💡 KEY INSIGHTS:")
 print(f"  • Top feature: {importance_df.iloc[0]['feature']} ({importance_df.iloc[0]['type']})")
-print(f"  • Feature type contributions:")
+print(f"    Importance: {importance_df.iloc[0]['importance']:.4f}")
+print(f"\n  • Feature type contributions:")
 for ftype in sorted(type_importance.index):
     print(f"    - {ftype.replace('_', ' ').title()}: {type_importance[ftype]/type_importance.sum()*100:.1f}%")
+
+print(f"\n  • Model rankings (by F1-Score):")
+sorted_models = sorted(model_results, key=lambda x: x['F1-Score'], reverse=True)
+for i, model in enumerate(sorted_models, 1):
+    marker = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else "  "
+    print(f"    {marker} {i}. {model['Model']:<20s} F1: {model['F1-Score']:.4f} | Acc: {model['Accuracy']:.4f}")
 
 print("\n" + "="*80)
 print("✅ PIPELINE EXECUTION COMPLETE!")
