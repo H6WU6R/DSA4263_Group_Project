@@ -8,7 +8,7 @@ including temporal features, URL/domain features, text meta-features, and graph 
 import numpy as np
 import pandas as pd
 import networkx as nx
-from typing import Tuple
+from typing import Tuple, List
 
 
 def engineer_temporal_features(df: pd.DataFrame, verbose: bool = True) -> pd.DataFrame:
@@ -333,26 +333,24 @@ def extract_graph_features_for_senders(senders: pd.Series, G: nx.DiGraph, verbos
 
 def prepare_features_with_graph(
     df: pd.DataFrame,
-    train_idx: np.ndarray,
-    test_idx: np.ndarray,
-    temporal_features: list,
-    url_domain_features: list,
-    text_meta_features: list,
-    graph_feature_names: list,
+    train_idx: pd.Index,
+    test_idx: pd.Index,
+    temporal_features: List[str],
+    url_domain_features: List[str],
+    text_meta_features: List[str],
+    graph_feature_names: List[str],
     verbose: bool = True
-) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series]:
     """
-    Prepare train and test feature matrices with graph features.
-    
-    Graph features are built ONLY on training data to prevent leakage.
+    Prepare features with graph features built ONLY on training data.
+    This prevents data leakage.
     
     Args:
-        df: Full dataframe with all engineered features (except graph)
-        train_idx: Training indices
-        test_idx: Test indices
+        df: Full dataframe with non-graph features
+        train_idx, test_idx: Train/test indices
         temporal_features: List of temporal feature names
         url_domain_features: List of URL/domain feature names
-        text_meta_features: List of text meta feature names
+        text_meta_features: List of text meta-feature names
         graph_feature_names: List of graph feature names
         verbose: Print progress messages
         
@@ -360,46 +358,55 @@ def prepare_features_with_graph(
         Tuple of (X_train, X_test, y_train, y_test)
     """
     if verbose:
-        print(f"\n[Features] Building graph features (training data only)...")
-    
-    train_df = df.iloc[train_idx].copy()
-    test_df = df.iloc[test_idx].copy()
+        print(f"\n[4.2] Building graph features (leakage-free)...")
     
     # Build graph on training data only
-    if verbose:
-        print(f"  ⏳ Building email network graph from training data...")
-    G_train = build_graph_from_data(train_df)
-    if verbose:
-        print(f"  ✓ Training graph: {G_train.number_of_nodes():,} nodes, {G_train.number_of_edges():,} edges")
+    train_data = df.loc[train_idx]
     
-    # Extract graph features for training data
-    train_graph_features = extract_graph_features_for_senders(train_df['sender'], G_train, verbose=verbose)
-    train_df_with_graph = train_df.merge(train_graph_features, on='sender', how='left')
-    
-    # Extract graph features for test data (using TRAINING graph to prevent leakage)
-    test_graph_features = extract_graph_features_for_senders(test_df['sender'], G_train, verbose=verbose)
-    test_df_with_graph = test_df.merge(test_graph_features, on='sender', how='left')
-    
-    # Fill any remaining NaN values
-    graph_cols = [col for col in train_df_with_graph.columns if col.startswith('graph_')]
-    train_df_with_graph[graph_cols] = train_df_with_graph[graph_cols].fillna(0)
-    test_df_with_graph[graph_cols] = test_df_with_graph[graph_cols].fillna(0)
-    
-    # Prepare final feature matrices
-    all_ml_features = temporal_features + url_domain_features + text_meta_features + graph_feature_names
-    
-    X_train = train_df_with_graph[all_ml_features].fillna(0)
-    X_test = test_df_with_graph[all_ml_features].fillna(0)
-    y_train = train_df_with_graph['label']
-    y_test = test_df_with_graph['label']
+    train_graph = build_graph_from_data(
+        train_data['sender'].values,
+        train_data['receiver'].values,
+        train_data['label'].values
+    )
     
     if verbose:
-        print(f"\n  ✓ Final feature count: {len(all_ml_features)}")
-        print(f"    - Temporal: {len(temporal_features)}")
-        print(f"    - URL/Domain: {len(url_domain_features)}")
-        print(f"    - Text meta: {len(text_meta_features)}")
-        print(f"    - Graph: {len(graph_feature_names)}")
-        print(f"\n  ⚠️  NOTE: Graph features built ONLY on training data to prevent data leakage!")
+        print(f"  ✓ Graph built with {train_graph.number_of_nodes()} nodes, {train_graph.number_of_edges()} edges")
+    
+    # Extract graph features for train set
+    train_graph_features = extract_graph_features_for_senders(
+        train_data['sender'].values,
+        train_graph
+    )
+    
+    # Extract graph features for test set (using training graph)
+    test_data = df.loc[test_idx]
+    test_graph_features = extract_graph_features_for_senders(
+        test_data['sender'].values,
+        train_graph
+    )
+    
+    # Combine all features
+    all_features = temporal_features + url_domain_features + text_meta_features + graph_feature_names
+    
+    # Prepare X_train
+    X_train = df.loc[train_idx, temporal_features + url_domain_features + text_meta_features].copy()
+    for i, feat in enumerate(graph_feature_names):
+        X_train[feat] = train_graph_features[:, i]
+    X_train = X_train[all_features].fillna(0)
+    
+    # Prepare X_test
+    X_test = df.loc[test_idx, temporal_features + url_domain_features + text_meta_features].copy()
+    for i, feat in enumerate(graph_feature_names):
+        X_test[feat] = test_graph_features[:, i]
+    X_test = X_test[all_features].fillna(0)
+    
+    # Get labels
+    y_train = df.loc[train_idx, 'label']
+    y_test = df.loc[test_idx, 'label']
+    
+    if verbose:
+        print(f"  ✓ Train features: {X_train.shape}")
+        print(f"  ✓ Test features: {X_test.shape}")
     
     return X_train, X_test, y_train, y_test
 
