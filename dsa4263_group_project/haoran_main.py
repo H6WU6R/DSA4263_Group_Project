@@ -240,4 +240,216 @@ print("\n✅ Point-in-time graph feature engineering complete!")
 print(f"Final dataset shape: {df.shape}")
 print(f"Columns: {df.columns.tolist()}")
 
+# Save graph features to CSV
+output_graph_path = "../data/processed/graph_features_pit.csv"
+df.to_csv(output_graph_path, index=False)
+print(f"\n💾 Graph features saved to: {output_graph_path}")
+
+# %% [markdown]
+# ## Point-in-Time Time Series Feature Engineering
+# This section computes temporal risk scores and sender temporal features using only past data.
+# Works on a fresh copy of the original cleaned data.
+
+# %%
+print("\n" + "="*80)
+print("POINT-IN-TIME TIME SERIES FEATURE ENGINEERING")
+print("="*80)
+
+# Reload original data to work on a clean copy
+df_ts = pd.read_csv("../data/processed/cleaned_date_merge.csv")
+df_ts['date'] = pd.to_datetime(df_ts['date'], errors='coerce')
+
+# Clean and prepare
+df_ts = df_ts.dropna(subset=['sender', 'receiver', 'date', 'label'])
+df_ts['sender'] = df_ts['sender'].astype(str).str.strip().str.lower()
+df_ts['receiver'] = df_ts['receiver'].astype(str).str.strip().str.lower()
+df_ts = df_ts[(df_ts['sender'] != 'nan') & (df_ts['receiver'] != 'nan')]
+
+# Sort by date for PIT processing
+df_ts = df_ts.sort_values('date').reset_index(drop=True)
+
+print(f"\nTime series df loaded: {len(df_ts):,} emails")
+print(f"Date range: {df_ts['date'].min()} to {df_ts['date'].max()}")
+
+# %% [markdown]
+# ### Step 1: Basic Temporal Features (Static, PIT-safe)
+
+# %%
+print("\n[1/6] Extracting basic temporal features...")
+
+# Extract basic temporal components (already PIT-safe - these are static properties)
+df_ts['hour'] = df_ts['date'].dt.hour
+df_ts['day_of_week'] = df_ts['date'].dt.dayofweek  # 0=Monday, 6=Sunday
+df_ts['is_weekend'] = df_ts['day_of_week'].isin([5, 6]).astype(int)
+df_ts['is_night'] = ((df_ts['hour'] >= 22) | (df_ts['hour'] <= 6)).astype(int)
+
+# Timezone region (if available)
+if 'timezone_region' in df_ts.columns:
+    df_ts['is_middle_east'] = (df_ts['timezone_region'] == 'Middle East/South Asia').astype(int)
+else:
+    df_ts['is_middle_east'] = 0
+
+print("✓ Basic temporal features extracted")
+
+# %% [markdown]
+# ### Step 2: PIT-Safe Temporal Risk Scores
+# For each email, compute risk scores using only emails sent BEFORE that timestamp.
+
+# %%
+print("\n[2/6] Computing PIT-safe temporal risk scores...")
+
+def compute_pit_risk_score(df, group_col, value_col='label'):
+    """
+    Compute point-in-time risk score (mean of value_col) for each group.
+    For row i, uses only rows 0 to i-1 in that group.
+    """
+    df = df.sort_values('date').reset_index(drop=True)
+    
+    # Use expanding window with shift to exclude current row
+    risk_scores = (
+        df.groupby(group_col)[value_col]
+        .apply(lambda x: x.shift().expanding().mean())
+        .reset_index(level=0, drop=True)
+    )
+    
+    # Fill NaN with global mean (for first occurrence of each group)
+    global_mean = df[value_col].mean()
+    risk_scores = risk_scores.fillna(global_mean)
+    
+    return risk_scores
+
+# Hour risk score (PIT-safe)
+df_ts['hour_risk_score'] = compute_pit_risk_score(df_ts, 'hour', 'label')
+
+# Weekday risk score (PIT-safe)
+df_ts['weekday_risk_score'] = compute_pit_risk_score(df_ts, 'day_of_week', 'label')
+
+# Region risk score (PIT-safe) - if timezone_region exists
+if 'timezone_region' in df_ts.columns:
+    df_ts['region_risk_score'] = compute_pit_risk_score(df_ts, 'timezone_region', 'label')
+else:
+    df_ts['region_risk_score'] = df_ts['label'].mean()
+
+print("✓ PIT-safe temporal risk scores computed")
+
+# %% [markdown]
+# ### Step 3: PIT-Safe Interaction Risk Scores
+
+# %%
+print("\n[3/6] Computing PIT-safe interaction risk scores...")
+
+# Create interaction column
+if 'timezone_region' in df_ts.columns:
+    df_ts['region_hour'] = df_ts['timezone_region'].astype(str) + '_' + df_ts['hour'].astype(str)
+    df_ts['region_hour_risk'] = compute_pit_risk_score(df_ts, 'region_hour', 'label')
+else:
+    df_ts['region_hour_risk'] = df_ts['label'].mean()
+
+print("✓ PIT-safe interaction risk scores computed")
+
+# %% [markdown]
+# ### Step 4: Sender Historical Features (PIT-safe)
+
+# %%
+print("\n[4/6] Computing sender historical features...")
+
+# Sort by sender and date
+df_ts = df_ts.sort_values(['sender', 'date']).reset_index(drop=True)
+
+# Sender historical email count (up to but not including current email)
+df_ts['sender_historical_count'] = df_ts.groupby('sender').cumcount()
+
+# Sender historical spam count (shifted to exclude current email)
+df_ts['sender_historical_spam_count'] = (
+    df_ts.groupby('sender')['label']
+    .apply(lambda x: x.shift().cumsum().fillna(0))
+    .reset_index(level=0, drop=True)
+)
+
+# Sender historical phishing rate
+df_ts['sender_historical_phishing_rate'] = np.where(
+    df_ts['sender_historical_count'] > 0,
+    df_ts['sender_historical_spam_count'] / df_ts['sender_historical_count'],
+    df_ts['label'].mean()  # Use global mean for first email
+)
+
+print("✓ Sender historical features computed")
+
+# %% [markdown]
+# ### Step 5: Sender Temporal Features (PIT-safe)
+
+# %%
+print("\n[5/6] Computing sender temporal features...")
+
+# Time gap since last email from sender (in seconds)
+df_ts['sender_time_gap'] = (
+    df_ts.groupby('sender')['date']
+    .diff()
+    .dt.total_seconds()
+    .fillna(-1)  # -1 for first email from sender
+)
+
+# Standard deviation of time gaps (expanding window, excluding current)
+df_ts['sender_time_gap_std'] = (
+    df_ts.groupby('sender')['sender_time_gap']
+    .apply(lambda x: x.shift().expanding().std())
+    .reset_index(level=0, drop=True)
+    .fillna(0)
+)
+
+# Sender lifespan in days (from first email to current)
+df_ts['sender_first_date'] = df_ts.groupby('sender')['date'].transform('first')
+df_ts['sender_lifespan_days'] = (
+    (df_ts['date'] - df_ts['sender_first_date']).dt.total_seconds() / 86400
+)
+df_ts = df_ts.drop(columns=['sender_first_date'])
+
+print("✓ Sender temporal features computed")
+
+# %% [markdown]
+# ### Step 6: Summary and Save
+
+# %%
+print("\n[6/6] Summary and saving...")
+
+# Re-sort by date for consistency
+df_ts = df_ts.sort_values('date').reset_index(drop=True)
+
+# List all time series features
+ts_features = [
+    'hour', 'day_of_week', 'is_weekend', 'is_night', 'is_middle_east',
+    'hour_risk_score', 'weekday_risk_score', 'region_risk_score', 'region_hour_risk',
+    'sender_historical_count', 'sender_historical_spam_count', 'sender_historical_phishing_rate',
+    'sender_time_gap', 'sender_time_gap_std', 'sender_lifespan_days'
+]
+
+print("\n" + "="*80)
+print("TIME SERIES FEATURES SUMMARY")
+print("="*80)
+print(f"\nTotal time series features: {len(ts_features)}")
+print(f"\nFeature list:")
+for feature in ts_features:
+    if feature in df_ts.columns:
+        print(f"  • {feature}")
+
+print(f"\n{'='*80}")
+print("FEATURE STATISTICS")
+print(f"{'='*80}\n")
+
+for feature in ts_features[:10]:  # Show first 10
+    if feature in df_ts.columns:
+        non_null = df_ts[feature].notna().sum()
+        print(f"{feature:40s}: {non_null:6,} / {len(df_ts):,} ({non_null/len(df_ts)*100:5.1f}%)")
+        if df_ts[feature].dtype in ['float64', 'int64']:
+            print(f"  Mean: {df_ts[feature].mean():.4f}, Median: {df_ts[feature].median():.4f}, "
+                  f"Max: {df_ts[feature].max():.4f}")
+
+# Save time series features to CSV
+output_ts_path = "../data/processed/timeseries_features_pit.csv"
+df_ts.to_csv(output_ts_path, index=False)
+print(f"\n💾 Time series features saved to: {output_ts_path}")
+
+print("\n✅ Point-in-time time series feature engineering complete!")
+print(f"Final dataset shape: {df_ts.shape}")
+
 # %%
