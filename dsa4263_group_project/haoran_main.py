@@ -452,4 +452,311 @@ print(f"\n💾 Time series features saved to: {output_ts_path}")
 print("\n✅ Point-in-time time series feature engineering complete!")
 print(f"Final dataset shape: {df_ts.shape}")
 
+# %% [markdown]
+# ## Text/NLP Feature Engineering
+# This section computes text-based features including cleaning, sentiment, and domain features.
+# Works on a fresh copy of the original cleaned data.
+# Most features are PIT-safe by design (computed per email).
+# Domain-based features will use PIT methods.
+
+# %%
+print("\n" + "="*80)
+print("TEXT/NLP FEATURE ENGINEERING")
+print("="*80)
+
+# Reload original data to work on a clean copy
+df_text = pd.read_csv("../data/processed/cleaned_date_merge.csv")
+df_text['date'] = pd.to_datetime(df_text['date'], errors='coerce')
+
+# Clean and prepare
+df_text = df_text.dropna(subset=['sender', 'receiver', 'date', 'label'])
+df_text['sender'] = df_text['sender'].astype(str).str.strip().str.lower()
+df_text['receiver'] = df_text['receiver'].astype(str).str.strip().str.lower()
+df_text = df_text[(df_text['sender'] != 'nan') & (df_text['receiver'] != 'nan')]
+
+# Sort by date for PIT processing
+df_text = df_text.sort_values('date').reset_index(drop=True)
+
+print(f"\nText df loaded: {len(df_text):,} emails")
+print(f"Date range: {df_text['date'].min()} to {df_text['date'].max()}")
+
+# %% [markdown]
+# ### Step 1: Text Cleaning Pipeline
+
+# %%
+print("\n[1/7] Text cleaning pipeline...")
+
+import re
+import nltk
+from nltk.corpus import stopwords
+from nltk.tokenize import word_tokenize
+from nltk.stem import WordNetLemmatizer, PorterStemmer
+
+# Download required NLTK data (run once)
+try:
+    nltk.data.find('tokenizers/punkt')
+except LookupError:
+    nltk.download('punkt', quiet=True)
+try:
+    nltk.data.find('corpora/stopwords')
+except LookupError:
+    nltk.download('stopwords', quiet=True)
+try:
+    nltk.data.find('corpora/wordnet')
+except LookupError:
+    nltk.download('wordnet', quiet=True)
+
+# Initialize
+stop_words = set(stopwords.words('english'))
+lemmatizer = WordNetLemmatizer()
+stemmer = PorterStemmer()
+
+# Fill missing text
+df_text['subject'] = df_text['subject'].fillna('')
+df_text['body'] = df_text['body'].fillna('')
+
+# Create combined text
+df_text['full_text'] = df_text['subject'] + ' ' + df_text['body']
+
+def clean_text_pipeline(text):
+    """
+    Multi-step text cleaning pipeline.
+    PIT-safe: operates on each email independently.
+    """
+    if pd.isna(text) or text == "":
+        return ""
+    
+    # Step 1: Lowercase
+    text = str(text).lower()
+    
+    # Step 2: Remove punctuation and numbers (keep only letters and spaces)
+    text = re.sub(r'[^a-zA-Z\s]', ' ', text)
+    
+    # Step 3: Remove extra whitespace
+    text = re.sub(r'\s+', ' ', text).strip()
+    
+    # Step 4: Tokenization
+    try:
+        tokens = word_tokenize(text)
+    except:
+        tokens = text.split()
+    
+    # Step 5: Remove stopwords
+    tokens = [word for word in tokens if word not in stop_words and len(word) > 2]
+    
+    # Step 6: Lemmatization
+    try:
+        tokens = [lemmatizer.lemmatize(word) for word in tokens]
+    except:
+        pass
+    
+    # Step 7: Stemming (optional - can be final step)
+    try:
+        tokens = [stemmer.stem(word) for word in tokens]
+    except:
+        pass
+    
+    return ' '.join(tokens)
+
+# Apply cleaning
+print("  Cleaning text (this may take a few minutes)...")
+df_text['cleaned_text'] = df_text['full_text'].apply(clean_text_pipeline)
+
+print("✓ Text cleaning complete")
+
+# %% [markdown]
+# ### Step 2: Text Meta-Features (PIT-safe by design)
+
+# %%
+print("\n[2/7] Computing text meta-features...")
+
+# Length features (computed from raw text, PIT-safe)
+df_text['subject_length'] = df_text['subject'].str.len()
+df_text['body_length'] = df_text['body'].str.len()
+df_text['text_length'] = df_text['full_text'].str.len()
+df_text['word_count'] = df_text['full_text'].str.split().str.len()
+
+# Character-based features (PIT-safe)
+df_text['uppercase_count'] = df_text['full_text'].str.count(r'[A-Z]')
+df_text['uppercase_ratio'] = df_text['uppercase_count'] / (df_text['text_length'] + 1)
+
+df_text['exclamation_count'] = df_text['full_text'].str.count(r'!')
+df_text['question_count'] = df_text['full_text'].str.count(r'\?')
+df_text['dollar_count'] = df_text['full_text'].str.count(r'\$')
+df_text['percent_count'] = df_text['full_text'].str.count(r'%')
+df_text['star_count'] = df_text['full_text'].str.count(r'\*')
+
+# Total special characters
+df_text['special_char_total'] = (
+    df_text['exclamation_count'] + df_text['question_count'] + 
+    df_text['dollar_count'] + df_text['percent_count'] + df_text['star_count']
+)
+
+# Digit features (PIT-safe)
+df_text['digit_count'] = df_text['full_text'].str.count(r'\d')
+df_text['digit_ratio'] = df_text['digit_count'] / (df_text['text_length'] + 1)
+
+# Average word length (PIT-safe)
+df_text['avg_word_length'] = np.where(
+    df_text['word_count'] > 0,
+    df_text['text_length'] / df_text['word_count'],
+    0
+)
+
+print("✓ Text meta-features computed")
+
+# %% [markdown]
+# ### Step 3: Sentiment Analysis (PIT-safe by design)
+
+# %%
+print("\n[3/7] Computing sentiment features...")
+
+try:
+    from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+    
+    analyzer = SentimentIntensityAnalyzer()
+    
+    def get_sentiment(text):
+        """Get VADER compound sentiment score. PIT-safe: per-email only."""
+        if pd.isna(text) or text == "":
+            return 0.0
+        try:
+            return analyzer.polarity_scores(str(text))['compound']
+        except:
+            return 0.0
+    
+    df_text['subject_sentiment'] = df_text['subject'].apply(get_sentiment)
+    df_text['body_sentiment'] = df_text['body'].apply(get_sentiment)
+    
+    print("✓ Sentiment features computed")
+except ImportError:
+    print("⚠️  vaderSentiment not installed. Installing...")
+    import subprocess
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "vaderSentiment", "-q"])
+    from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+    
+    analyzer = SentimentIntensityAnalyzer()
+    df_text['subject_sentiment'] = df_text['subject'].apply(
+        lambda x: analyzer.polarity_scores(str(x) if pd.notna(x) else "")['compound']
+    )
+    df_text['body_sentiment'] = df_text['body'].apply(
+        lambda x: analyzer.polarity_scores(str(x) if pd.notna(x) else "")['compound']
+    )
+    print("✓ Sentiment features computed")
+
+# %% [markdown]
+# ### Step 4: URL Features (PIT-safe by design)
+
+# %%
+print("\n[4/7] Computing URL features...")
+
+# Handle missing URLs
+df_text['urls'] = df_text['urls'].fillna(0)
+
+# URL features (PIT-safe - per email only)
+df_text['has_url'] = (df_text['urls'] > 0).astype(int)
+df_text['urls_log'] = np.log1p(df_text['urls'])
+
+print("✓ URL features computed")
+
+# %% [markdown]
+# ### Step 5: Domain Features (PIT-safe with historical data)
+
+# %%
+print("\n[5/7] Computing domain features (PIT-safe)...")
+
+# Extract sender domain
+df_text['sender_domain'] = df_text['sender'].str.split('@').str[-1]
+
+# PIT-safe domain spam rate (using only past emails)
+df_text = df_text.sort_values('date').reset_index(drop=True)
+
+# Calculate cumulative domain statistics
+df_text['domain_email_count'] = df_text.groupby('sender_domain').cumcount()
+df_text['domain_spam_cumsum'] = (
+    df_text.groupby('sender_domain')['label']
+    .apply(lambda x: x.shift().cumsum().fillna(0))
+    .reset_index(level=0, drop=True)
+)
+
+# Domain spam rate (PIT-safe)
+global_spam_rate = df_text['label'].mean()
+df_text['domain_spam_rate'] = np.where(
+    df_text['domain_email_count'] > 0,
+    df_text['domain_spam_cumsum'] / df_text['domain_email_count'],
+    global_spam_rate  # Use global mean for first occurrence
+)
+
+# Is suspicious domain (based on PIT domain spam rate)
+df_text['is_suspicious_domain'] = (df_text['domain_spam_rate'] > 0.7).astype(int)
+
+# Domain frequency (PIT-safe - count of past emails from this domain)
+df_text['domain_frequency'] = df_text['domain_email_count']
+
+# Is rare domain (PIT-safe - based on past frequency)
+df_text['is_rare_domain'] = (df_text['domain_frequency'] <= 5).astype(int)
+
+print("✓ Domain features computed (PIT-safe)")
+
+# %% [markdown]
+# ### Step 6: Additional Cleaning (if needed)
+
+# %%
+print("\n[6/7] Additional data cleaning...")
+
+# Fill any remaining NaNs in numeric columns
+numeric_cols = df_text.select_dtypes(include=[np.number]).columns
+for col in numeric_cols:
+    if df_text[col].isna().any():
+        df_text[col] = df_text[col].fillna(0)
+
+print("✓ Additional cleaning complete")
+
+# %% [markdown]
+# ### Step 7: Summary and Save
+
+# %%
+print("\n[7/7] Summary and saving...")
+
+# List all text/NLP features
+text_features = [
+    'cleaned_text', 'full_text',
+    'subject_length', 'body_length', 'text_length', 'word_count',
+    'uppercase_count', 'uppercase_ratio', 'exclamation_count', 'question_count',
+    'dollar_count', 'percent_count', 'star_count', 'special_char_total',
+    'digit_count', 'digit_ratio', 'avg_word_length',
+    'subject_sentiment', 'body_sentiment',
+    'urls', 'has_url', 'urls_log',
+    'sender_domain', 'domain_spam_rate', 'is_suspicious_domain',
+    'domain_frequency', 'is_rare_domain'
+]
+
+print("\n" + "="*80)
+print("TEXT/NLP FEATURES SUMMARY")
+print("="*80)
+print(f"\nTotal text/NLP features: {len(text_features)}")
+print(f"\nFeature list:")
+for feature in text_features:
+    if feature in df_text.columns:
+        print(f"  • {feature}")
+
+print(f"\n{'='*80}")
+print("FEATURE STATISTICS")
+print(f"{'='*80}\n")
+
+numeric_text_features = [f for f in text_features if f in df_text.columns and df_text[f].dtype in ['float64', 'int64']]
+for feature in numeric_text_features[:15]:  # Show first 15
+    non_null = df_text[feature].notna().sum()
+    print(f"{feature:40s}: {non_null:6,} / {len(df_text):,} ({non_null/len(df_text)*100:5.1f}%)")
+    print(f"  Mean: {df_text[feature].mean():.4f}, Median: {df_text[feature].median():.4f}, "
+          f"Max: {df_text[feature].max():.4f}")
+
+# Save text/NLP features to CSV
+output_text_path = "../data/processed/text_features_pit.csv"
+df_text.to_csv(output_text_path, index=False)
+print(f"\n💾 Text/NLP features saved to: {output_text_path}")
+
+print("\n✅ Text/NLP feature engineering complete!")
+print(f"Final dataset shape: {df_text.shape}")
+
 # %%
