@@ -17,6 +17,7 @@ dependencies = [
     "pandas>=2.1",
     "scikit-learn>=1.4",
     "seaborn>=0.13.2",
+    "vadersentiment>=3.3.2",
     "wordcloud>=1.9.4",
 ]
 
