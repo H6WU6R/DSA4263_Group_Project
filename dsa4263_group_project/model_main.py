@@ -254,12 +254,61 @@ print("\n" + results_df.to_string(index=False))
 print("\n✓ Base models trained successfully")
 
 # %% [markdown]
-# ## 8. Train Ridge Stacking Ensemble (F1-based)
+# ## 8. Analyze Model Diversity
 
 # %%
 print("\n" + "="*80)
-print("STEP 7: TRAINING RIDGE STACKING ENSEMBLE")
+print("STEP 7: MODEL DIVERSITY ANALYSIS")
 print("="*80)
+
+# Calculate pairwise agreement between models
+print("\nAnalyzing model diversity (prediction agreement)...")
+model_names = list(model_objects.keys())
+n_models = len(model_names)
+
+# Create prediction matrix
+pred_matrix = np.zeros((len(y_test), n_models))
+for i, (model_name, (_, pred)) in enumerate(model_objects.items()):
+    pred_matrix[:, i] = pred
+
+# Calculate pairwise agreement
+agreement_matrix = np.zeros((n_models, n_models))
+for i in range(n_models):
+    for j in range(n_models):
+        agreement_matrix[i, j] = np.mean(pred_matrix[:, i] == pred_matrix[:, j])
+
+# Display agreement matrix
+print("\nPairwise prediction agreement (higher = more similar):")
+agreement_df = pd.DataFrame(agreement_matrix, index=model_names, columns=model_names)
+print(agreement_df.round(3).to_string())
+
+# Calculate average disagreement (diversity score)
+avg_agreement = np.mean(agreement_matrix[np.triu_indices(n_models, k=1)])
+diversity_score = 1 - avg_agreement
+print(f"\n  • Average pairwise agreement: {avg_agreement:.3f}")
+print(f"  • Diversity score: {diversity_score:.3f} (higher = more diverse)")
+
+if diversity_score < 0.05:
+    print("  ⚠️  WARNING: Low diversity - models make very similar predictions")
+    print("     Stacking may not improve much over the best base model")
+elif diversity_score > 0.15:
+    print("  ✓ Good diversity - stacking ensemble should benefit from diverse predictions")
+else:
+    print("  ℹ️  Moderate diversity - some potential for stacking improvement")
+
+# %% [markdown]
+# ## 9. Train Ridge Stacking Ensemble (F1-based with Validation Split)
+
+# %%
+print("\n" + "="*80)
+print("STEP 8: TRAINING RIDGE STACKING ENSEMBLE")
+print("="*80)
+print("\n⚠️  Important: Using proper validation set for stacking")
+print("   • Training data split: 80% meta-train, 20% meta-validation")
+print("   • Base models retrained on meta-train only")
+print("   • Meta-learner trained on meta-validation predictions")
+print("   • Final evaluation on held-out test set")
+print("   • Maintains temporal order (no data leakage)")
 
 ridge_results, ridge_meta, ridge_pred = train_ridge_ensemble(
     model_objects=model_objects,
@@ -267,13 +316,14 @@ ridge_results, ridge_meta, ridge_pred = train_ridge_ensemble(
     y_train=y_train,
     X_test=X_test_scaled,
     y_test=y_test,
+    val_split=0.2,  # 20% of training data for validation
     verbose=True
 )
 
 print("\n✓ Ridge stacking ensemble trained successfully")
 
 # %% [markdown]
-# ## 9. Compare All Models (Including Ensemble)
+# ## 10. Compare All Models (Including Ensemble)
 
 # %%
 print("\n" + "="*80)
