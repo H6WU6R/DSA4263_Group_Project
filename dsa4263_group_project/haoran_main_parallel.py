@@ -325,13 +325,17 @@ def compute_text_features(df_input):
     try:
         from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
         analyzer = SentimentIntensityAnalyzer()
+        print("    • Computing sentiment scores...")
         df['subject_sentiment'] = df['subject'].apply(
             lambda x: analyzer.polarity_scores(str(x) if pd.notna(x) else "")['compound']
         )
         df['body_sentiment'] = df['body'].apply(
             lambda x: analyzer.polarity_scores(str(x) if pd.notna(x) else "")['compound']
         )
-    except:
+        print(f"      ✓ Sentiment scores computed (mean subject: {df['subject_sentiment'].mean():.3f}, mean body: {df['body_sentiment'].mean():.3f})")
+    except Exception as e:
+        print(f"    ⚠️  WARNING: Sentiment analysis failed: {e}")
+        print(f"       Setting sentiment scores to 0. Install vaderSentiment: pip install vaderSentiment")
         df['subject_sentiment'] = 0.0
         df['body_sentiment'] = 0.0
     
@@ -376,6 +380,8 @@ def compute_text_features(df_input):
 # ## Main Execution - Parallel Processing
 
 # %%
+# ...existing code...
+
 if __name__ == '__main__':
     print("\n" + "="*80)
     print("PARALLEL FEATURE ENGINEERING PIPELINE")
@@ -393,10 +399,12 @@ if __name__ == '__main__':
     print("  3. Text/NLP features")
     
     with Pool(processes=3) as pool:
-        results = pool.map(
-            lambda func: func(df_original),
-            [compute_graph_features, compute_timeseries_features, compute_text_features]
-        )
+        results = [
+            pool.apply_async(compute_graph_features, (df_original,)),
+            pool.apply_async(compute_timeseries_features, (df_original,)),
+            pool.apply_async(compute_text_features, (df_original,))
+        ]
+        results = [r.get() for r in results]
     
     elapsed_time = time.time() - start_time
     
