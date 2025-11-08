@@ -1,0 +1,20 @@
+name: Sync to Overleaf
+on:
+  push:
+    branches: [ main ]   # change if your default branch isn't main
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure Git
+        run: |
+          git config --global user.name  "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Push to Overleaf (map main -> master)
+        run: |
+          git push https://:${{ secrets.OVERLEAF_GIT_TOKEN }}@git.overleaf.com/${{ secrets.OVERLEAF_PROJECT_ID }} HEAD:master -f
