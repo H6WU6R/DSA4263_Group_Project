@@ -76,21 +76,87 @@ class DataCleaner:
 		df = df.drop(columns=['timezone_offset', 'timezone_hours'], errors='ignore')
 		return df
 
+	def _remove_punctuation_numbers(self, text):
+		"""Remove punctuation and numbers, keeping only letters and spaces."""
+		text = re.sub(r'[^a-zA-Z\s]', ' ', str(text))
+		text = re.sub(r'\s+', ' ', text).strip()
+		return text
+
+	def _tokenize_text(self, text):
+		"""Tokenize text using NLTK word_tokenize."""
+		try:
+			from nltk.tokenize import word_tokenize
+			tokens = word_tokenize(str(text))
+			return ' '.join(tokens)
+		except ImportError:
+			# Fallback to simple split if NLTK not available
+			return text
+
+	def _remove_stopwords(self, text):
+		"""Remove stopwords from text."""
+		if not self.stop_words:
+			return text
+		tokens = text.split()
+		filtered_tokens = [word for word in tokens if word.lower() not in self.stop_words and len(word) > 2]
+		return ' '.join(filtered_tokens)
+
+	def _lemmatize_text(self, text):
+		"""Lemmatize text tokens."""
+		if not self.lemmatizer:
+			return text
+		tokens = text.split()
+		lemmatized_tokens = [self.lemmatizer.lemmatize(word) for word in tokens]
+		return ' '.join(lemmatized_tokens)
+	
 	def clean_text(self, text: str) -> str:
 		"""
-		Clean email text: lowercase, remove punctuation, stopwords, lemmatize.
+		Clean email text using all cleaning steps from notebooks:
+		1. Handle NaN/empty
+		2. Lowercase
+		3. Remove punctuation and numbers
+		4. Tokenize (NLTK word_tokenize)
+		5. Remove stopwords
+		6. Lemmatize
 		"""
+		# Step 1: Handle NaN/empty
 		if pd.isna(text) or text == "":
 			return ""
+		
+		# Step 2: Lowercase
 		text = str(text).lower()
-		text = re.sub(r'[^a-zA-Z\s]', ' ', text)
-		text = re.sub(r'\s+', ' ', text).strip()
-		tokens = text.split()
-		if self.stop_words:
-			tokens = [w for w in tokens if w not in self.stop_words and len(w) > 2]
-		if self.lemmatizer:
+		
+		# Step 3: Remove punctuation and numbers
+		text = self._remove_punctuation_numbers(text)
+		
+		# Step 4: Tokenize (optional, NLTK word_tokenize for better tokenization)
+		text = self._tokenize_text(text)
+		
+		# Step 5: Remove stopwords
+		text = self._remove_stopwords(text)
+		
+		# Step 6: Lemmatize
+		text = self._lemmatize_text(text)
+		
+		return text
+	
+	def clean_text_column(self, series: pd.Series, show_progress: bool = True) -> pd.Series:
+		"""
+		Clean an entire text column (vectorized operation).
+		Use this for cleaning subject/body columns.
+		
+		Args:
+			series: pandas Series containing text
+			show_progress: Whether to show progress bar (requires tqdm)
+		
+		Returns:
+			Cleaned pandas Series
+		"""
+		if show_progress:
 			try:
-				tokens = [self.lemmatizer.lemmatize(w) for w in tokens]
-			except Exception:
+				from tqdm import tqdm
+				tqdm.pandas(desc="Cleaning text")
+				return series.progress_apply(self.clean_text)
+			except ImportError:
 				pass
-		return ' '.join(tokens)
+		
+		return series.apply(self.clean_text)
