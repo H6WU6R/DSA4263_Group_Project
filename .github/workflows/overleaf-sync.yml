@@ -17,4 +17,4 @@ jobs:
 
       - name: Push to Overleaf (map main -> master)
         run: |
-          git push https://:${{ secrets.OVERLEAF_GIT_TOKEN }}@git.overleaf.com/${{ secrets.OVERLEAF_PROJECT_ID }} HEAD:master -f
+          git push https://git:${{ secrets.OVERLEAF_GIT_TOKEN }}@git.overleaf.com/${{ secrets.OVERLEAF_PROJECT_ID }} HEAD:master -f
