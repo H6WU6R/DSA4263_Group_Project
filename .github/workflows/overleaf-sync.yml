@@ -1,7 +1,7 @@
 name: Sync to Overleaf
 on:
   push:
-    branches: [ main ]  # change if needed
+    branches: [ main ]
 
 jobs:
   sync:
@@ -10,14 +10,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0            # get full history
+          fetch-depth: 0
 
       - name: Configure Git
         run: |
           git config --global user.name  "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git config --global pack.allowThin false   # avoid thin packs
+          git config --global pack.allowThin false
 
-      - name: Push to Overleaf (map main -> master)
+      - name: Push to Overleaf (safe)
         run: |
-          git push --force --no-thin "https://git:${{ secrets.OVERLEAF_GIT_TOKEN }}@git.overleaf.com/${{ secrets.OVERLEAF_PROJECT_ID }}" HEAD:master
+          git pull --rebase "https://git:${{ secrets.OVERLEAF_GIT_TOKEN }}@git.overleaf.com/${{ secrets.OVERLEAF_PROJECT_ID }}" master || true
+          git push "https://git:${{ secrets.OVERLEAF_GIT_TOKEN }}@git.overleaf.com/${{ secrets.OVERLEAF_PROJECT_ID }}" HEAD:master
