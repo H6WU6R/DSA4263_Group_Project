@@ -27,6 +27,44 @@ class DataCleaner:
 		df = df.dropna(subset=[sender_col])
 
 		return df
+	
+	def _parse_timezone_offset(self, tz_str):
+		"""Convert timezone string like '+0800' or '-0700' to hours"""
+		if pd.isna(tz_str):
+			return 0.0  # Treat missing timezone as UTC (+0000)
+		try:
+			sign = 1 if tz_str[0] == '+' else -1
+			hours = int(tz_str[1:3])
+			minutes = int(tz_str[3:5])
+			return sign * (hours + minutes / 60.0)
+		except (ValueError, IndexError):
+			return 0.0  # Default to UTC on error
+
+	def _get_simple_region(self, offset_hours):
+		"""
+		Simplified 6-region model for cleaner visualization
+		Valid range: UTC-12:00 to UTC+14:00
+
+		Boundary handling:
+		- UTC-4 belongs to Americas (e.g., Atlantic Time)
+		- UTC+2 belongs to Europe/Africa (e.g., South Africa)
+		- UTC+6 belongs to Middle East/South Asia (e.g., Bangladesh)
+		- UTC+10 belongs to APAC (e.g., Australian Eastern Time)
+		"""
+		if pd.isna(offset_hours):
+			return 'Unknown'
+		elif -12 <= offset_hours < -4:
+			return 'Americas'
+		elif -4 <= offset_hours <= 2:
+			return 'Europe/Africa'
+		elif 2 < offset_hours <= 6:
+			return 'Middle East/South Asia'  # Includes all .5 offsets (Iran, India, etc.)
+		elif 6 < offset_hours <= 10:
+			return 'APAC'  # Includes Myanmar (6.5), Australia Central (9.5)
+		elif 10 < offset_hours <= 14:
+			return 'Oceania/Pacific'  # Includes Fiji, New Zealand, etc.
+		else:
+			return 'Unknown'  # Out of valid range
 
 	def clean_dates(self, df: pd.DataFrame, date_col: str = 'date') -> pd.DataFrame:
 		"""
