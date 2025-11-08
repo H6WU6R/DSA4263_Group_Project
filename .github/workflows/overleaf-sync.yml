@@ -1,16 +1,16 @@
-name: Sync to Overleaf
+name: Sync figures to Overleaf
 on:
   push:
-    branches: [ main ]
+    branches: [ main ]         # adjust if your default branch is different
+    paths:
+      - "reports/figures/**"   # only run when figures change
 
 jobs:
-  sync:
+  sync-figures:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout repo (full history not required here)
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Configure Git
         run: |
@@ -18,7 +18,28 @@ jobs:
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git config --global pack.allowThin false
 
-      - name: Push to Overleaf (safe)
+      - name: Clone Overleaf project
         run: |
-          git pull --rebase "https://git:${{ secrets.OVERLEAF_GIT_TOKEN }}@git.overleaf.com/${{ secrets.OVERLEAF_PROJECT_ID }}" master || true
-          git push "https://git:${{ secrets.OVERLEAF_GIT_TOKEN }}@git.overleaf.com/${{ secrets.OVERLEAF_PROJECT_ID }}" HEAD:master
+          rm -rf overleaf
+          git clone "https://git:${{ secrets.OVERLEAF_GIT_TOKEN }}@git.overleaf.com/${{ secrets.OVERLEAF_PROJECT_ID }}" overleaf
+          cd overleaf
+          # Ensure we're on the default branch (usually master)
+          git checkout master || git checkout main
+
+      - name: Copy only figures into Overleaf tree
+        run: |
+          mkdir -p overleaf/reports/figures
+          rsync -av --delete reports/figures/ overleaf/reports/figures/
+
+      - name: Commit & push if there are changes
+        working-directory: overleaf
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            git add -A
+            git commit -m "Update figures from GitHub CI"
+            # Push to the same branch we checked out above; default is master
+            current_branch=$(git rev-parse --abbrev-ref HEAD)
+            git push "https://git:${{ secrets.OVERLEAF_GIT_TOKEN }}@git.overleaf.com/${{ secrets.OVERLEAF_PROJECT_ID }}" "$current_branch"
+          else
+            echo "No changes in reports/figures; skipping push."
+          fi
