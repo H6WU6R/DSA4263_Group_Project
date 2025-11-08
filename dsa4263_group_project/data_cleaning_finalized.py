@@ -13,6 +13,21 @@ class DataCleaner:
 		self.stop_words = stop_words
 		self.lemmatizer = lemmatizer
 
+	def clean_and_merge(self, df, sender_col = 'sender', receiver_col = 'receiver'):
+		"""
+		Fill missing receiver values with unique labels and drop rows where sender is missing
+		"""
+		df = df.copy()
+		
+		na_indices = df[df[receiver_col].isnull()].index
+
+		for i, idx in enumerate(na_indices, 1):
+			df.at[idx, receiver_col] = f"na{i}"
+		
+		df = df.dropna(subset=[sender_col])
+
+		return df
+
 	def clean_dates(self, df: pd.DataFrame, date_col: str = 'date') -> pd.DataFrame:
 		"""
 		Clean and standardize date columns, extract timezone, remove anomalies.
