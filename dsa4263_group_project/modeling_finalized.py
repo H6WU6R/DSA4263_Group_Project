@@ -1,7 +1,7 @@
 # Model Training Pipeline with Baseline Tracking and Hyperparameter Tuning
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split, RandomizedSearchCV
+from sklearn.model_selection import train_test_split, RandomizedSearchCV, TimeSeriesSplit
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression, Ridge
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
@@ -407,12 +407,14 @@ class ModelTrainer:
             
             # Perform random search
             try:
+                tscv = TimeSeriesSplit(n_splits=cv_splits)
+
                 random_search = RandomizedSearchCV(
                     estimator=base_model,
                     param_distributions=param_grid,
                     n_iter=n_iter,
                     scoring='f1',
-                    cv=cv_splits,
+                    cv=tscv,
                     random_state=self.random_state,
                     n_jobs=-1,
                     verbose=0

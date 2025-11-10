@@ -31,14 +31,14 @@ class DataCleaner:
 	def _parse_timezone_offset(self, tz_str):
 		"""Convert timezone string like '+0800' or '-0700' to hours."""
 		if pd.isna(tz_str):
-			return 0.0
+			return pd.NA
 		try:
 			sign = 1 if tz_str[0] == '+' else -1
 			hours = int(tz_str[1:3])
 			minutes = int(tz_str[3:5])
 			return sign * (hours + minutes / 60.0)
 		except (ValueError, IndexError):
-			return 0.0
+			return pd.NA
 
 	def _get_simple_region(self, offset_hours):
 		"""Map timezone offset to region."""
