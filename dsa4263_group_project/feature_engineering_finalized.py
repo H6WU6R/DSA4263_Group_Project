@@ -4,6 +4,7 @@ import numpy as np
 import networkx as nx
 from tqdm import tqdm
 import warnings
+from dsa4263_group_project.config import PROCESSED_DATA_DIR, RAW_DATA_DIR
 from typing import Optional, Tuple
 
 warnings.filterwarnings('ignore')
@@ -626,7 +627,7 @@ class FeatureEngineer:
 			df: DataFrame with features
 			output_path: Path to save CSV file
 		"""
-		df.to_csv(output_path, index=False)
+		df.to_csv(PROCESSED_DATA_DIR / output_path, index=False)
 		self._log(f"💾 Features saved to: {output_path}")
 
 
@@ -696,7 +697,7 @@ if __name__ == '__main__':
 	print("-" * 80)
 	
 	# Load your data
-	df = pd.read_csv("../data/processed/cleaned_date_merge.csv")
+	df = pd.read_csv(PROCESSED_DATA_DIR / "cleaned_date_merge.csv")
 	df['date'] = pd.to_datetime(df['date'], errors='coerce')
 	df = df.dropna(subset=['sender', 'receiver', 'date', 'label'])
 	df = df.sort_values('date').reset_index(drop=True)
@@ -738,8 +739,8 @@ if __name__ == '__main__':
 	print(f"🚀 Speedup: {elapsed_sequential/elapsed_parallel:.2f}x")
 	
 	# Save features
-	engineer.save_features(df_graph_parallel, "../data/processed/graph_features_pit.csv")
-	engineer.save_features(df_ts_parallel, "../data/processed/timeseries_features_pit.csv")
-	engineer.save_features(df_text_parallel, "../data/processed/text_features_pit.csv")
+	engineer.save_features(df_graph_parallel, "graph_features_pit.csv")
+	engineer.save_features(df_ts_parallel, "timeseries_features_pit.csv")
+	engineer.save_features(df_text_parallel, "text_features_pit.csv")
 	
 	print("\n✅ Feature engineering complete!")

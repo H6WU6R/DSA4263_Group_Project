@@ -1,6 +1,7 @@
 # Template class for data cleaning (date and text)
 import pandas as pd
 import re
+from dsa4263_group_project.config import PROCESSED_DATA_DIR, RAW_DATA_DIR
 
 class DataCleaner:
 	"""
@@ -27,6 +28,16 @@ class DataCleaner:
 		df = df.dropna(subset=[sender_col])
 
 		return df
+
+	@staticmethod
+	def load_raw_data(filename: str) -> pd.DataFrame:
+		"""Load raw data from config RAW_DATA_DIR."""
+		return pd.read_csv(RAW_DATA_DIR / filename)
+
+	@staticmethod
+	def save_processed_data(df: pd.DataFrame, filename: str):
+		"""Save processed data to config PROCESSED_DATA_DIR."""
+		df.to_csv(PROCESSED_DATA_DIR / filename, index=False)
 	
 	def _parse_timezone_offset(self, tz_str):
 		"""Convert timezone string like '+0800' or '-0700' to hours."""

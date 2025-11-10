@@ -3,7 +3,7 @@ Complete End-to-End Pipeline for Spam Detection
 ================================================
 This script runs the complete pipeline:
 1. Data Cleaning (DataCleaner)
-2. Feature Engineering (FeatureEngineer) - with multiprocessing
+2. Feature Engineering (FeatureEngineer)
 3. Model Training (ModelTrainer) - baseline + tuning + ensemble
 
 Usage:
@@ -20,8 +20,6 @@ import os
 import time
 import argparse
 import pandas as pd
-import numpy as np
-from multiprocessing import Pool
 import warnings
 
 # Add project root to path
@@ -29,12 +27,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 # Import our modules
 from data_cleaning_finalized import DataCleaner
-from feature_engineering_finalized import (
-    FeatureEngineer,
-    compute_graph_features_parallel,
-    compute_timeseries_features_parallel,
-    compute_text_features_parallel
-)
+from feature_engineering_finalized import FeatureEngineer
 from modeling_finalized import ModelTrainer
 
 warnings.filterwarnings('ignore')
@@ -58,42 +51,73 @@ def step_1_data_cleaning(
     """
     print_header("STEP 1: DATA CLEANING")
     
+    text_columns = [
+        ('subject', 'subject_clean'),
+        ('body', 'body_clean')
+    ]
+    
+    def _setup_text_resources():
+        print("\n📦 Setting up NLTK...")
+        try:
+            import nltk
+            from nltk.corpus import stopwords
+            from nltk.stem import WordNetLemmatizer
+            
+            for resource in ['punkt', 'stopwords', 'wordnet']:
+                try:
+                    nltk.data.find(f'tokenizers/{resource}' if resource == 'punkt' else f'corpora/{resource}')
+                except LookupError:
+                    print(f"  • Downloading {resource}...")
+                    nltk.download(resource, quiet=True)
+            
+            stop_words = set(stopwords.words('english'))
+            stop_words.update(['re', 'fwd', 'subject'])  # Email-specific stopwords
+            lemmatizer = WordNetLemmatizer()
+            
+            print("  ✓ NLTK resources ready")
+        except Exception as e:
+            print(f"  ⚠️  NLTK setup failed: {e}")
+            print("     Continuing without NLTK features...")
+            stop_words = None
+            lemmatizer = None
+        return stop_words, lemmatizer
+    
+    def _apply_text_cleaning(df_to_clean: pd.DataFrame, cleaner: DataCleaner, only_missing: bool = False):
+        for source_col, cleaned_col in text_columns:
+            if source_col not in df_to_clean.columns:
+                print(f"  • Skipping '{source_col}' (column not found)")
+                continue
+            if only_missing and cleaned_col in df_to_clean.columns:
+                continue
+            action = "Updating" if not only_missing else "Filling missing"
+            print(f"  • {action} '{source_col}' text -> '{cleaned_col}'")
+            source_series = df_to_clean[source_col].fillna("")
+            df_to_clean[cleaned_col] = cleaner.clean_text_column(source_series, show_progress=True)
+    
     if skip and os.path.exists(output_path):
         print(f"\n⏭️  Skipping data cleaning (using existing file)")
         print(f"   Loading: {output_path}")
         df = pd.read_csv(output_path)
         df['date'] = pd.to_datetime(df['date'])
+        if 'email_id' not in df.columns:
+            df['email_id'] = df.index
+            print("  • Added missing 'email_id' column")
+        missing_clean_cols = [col for _, col in text_columns if col not in df.columns]
+        if missing_clean_cols:
+            print("  • Detected missing cleaned text columns. Updating existing file...")
+            stop_words, lemmatizer = _setup_text_resources()
+            cleaner = DataCleaner(stop_words=stop_words, lemmatizer=lemmatizer)
+            _apply_text_cleaning(df, cleaner, only_missing=True)
+            df.to_csv(output_path, index=False)
         print(f"   ✓ Loaded {len(df):,} emails")
         return df
     
     print(f"\nLoading raw data from: {input_path}")
     df = pd.read_csv(input_path)
+    df['email_id'] = df.index
     print(f"  • Initial rows: {len(df):,}")
     
-    # Initialize NLTK
-    print("\n📦 Setting up NLTK...")
-    try:
-        import nltk
-        from nltk.corpus import stopwords
-        from nltk.stem import WordNetLemmatizer
-        
-        for resource in ['punkt', 'stopwords', 'wordnet']:
-            try:
-                nltk.data.find(f'tokenizers/{resource}' if resource == 'punkt' else f'corpora/{resource}')
-            except LookupError:
-                print(f"  • Downloading {resource}...")
-                nltk.download(resource, quiet=True)
-        
-        stop_words = set(stopwords.words('english'))
-        stop_words.update(['re', 'fwd', 'subject'])  # Email-specific stopwords
-        lemmatizer = WordNetLemmatizer()
-        
-        print("  ✓ NLTK resources ready")
-    except Exception as e:
-        print(f"  ⚠️  NLTK setup failed: {e}")
-        print("     Continuing without NLTK features...")
-        stop_words = None
-        lemmatizer = None
+    stop_words, lemmatizer = _setup_text_resources()
     
     # Initialize cleaner
     cleaner = DataCleaner(stop_words=stop_words, lemmatizer=lemmatizer)
@@ -105,6 +129,9 @@ def step_1_data_cleaning(
     
     df = cleaner.clean_dates(df)
     print(f"  ✓ Cleaned dates: {len(df):,} rows")
+
+    # Clean subject/body text for downstream reuse
+    _apply_text_cleaning(df, cleaner)
     
     # Save cleaned data
     df.to_csv(output_path, index=False)
@@ -117,7 +144,6 @@ def step_1_data_cleaning(
 def step_2_feature_engineering(
     df: pd.DataFrame,
     output_dir: str = "../data/processed",
-    use_parallel: bool = True,
     skip: bool = False
 ) -> pd.DataFrame:
     """
@@ -153,37 +179,17 @@ def step_2_feature_engineering(
     print(f"  • Dataset: {len(df):,} emails")
     print(f"  • Date range: {df['date'].min()} to {df['date'].max()}")
     
-    if use_parallel:
-        print(f"\n🚀 Running parallel feature engineering (3 processes)...")
-        start_time = time.time()
-        
-        with Pool(processes=3) as pool:
-            results = [
-                pool.apply_async(compute_graph_features_parallel, (df.copy(),)),
-                pool.apply_async(compute_timeseries_features_parallel, (df.copy(),)),
-                pool.apply_async(compute_text_features_parallel, (df.copy(),))
-            ]
-            results = [r.get() for r in results]
-        
-        elapsed = time.time() - start_time
-        
-        df_graph = results[0][0]
-        df_ts = results[1][0]
-        df_text = results[2][0]
-        
-        print(f"\n⏱️  Parallel execution time: {elapsed:.2f} seconds ({elapsed/60:.2f} minutes)")
-    else:
-        print(f"\n⏳ Running sequential feature engineering...")
-        start_time = time.time()
-        
-        engineer = FeatureEngineer(verbose=True)
-        
-        df_graph = engineer.compute_graph_features(df.copy())
-        df_ts = engineer.compute_timeseries_features(df.copy())
-        df_text = engineer.compute_text_features(df.copy())
-        
-        elapsed = time.time() - start_time
-        print(f"\n⏱️  Sequential execution time: {elapsed:.2f} seconds ({elapsed/60:.2f} minutes)")
+    print(f"\n⏳ Running sequential feature engineering...")
+    start_time = time.time()
+    
+    engineer = FeatureEngineer(verbose=True)
+    
+    df_graph = engineer.compute_graph_features(df.copy())
+    df_ts = engineer.compute_timeseries_features(df.copy())
+    df_text = engineer.compute_text_features(df.copy())
+    
+    elapsed = time.time() - start_time
+    print(f"\n⏱️  Feature engineering time: {elapsed:.2f} seconds ({elapsed/60:.2f} minutes)")
     
     # Save individual feature sets
     engineer = FeatureEngineer(verbose=False)
@@ -208,8 +214,17 @@ def merge_features(
     """
     print(f"\n🔗 Merging feature sets...")
     
-    # Ensure all sorted by date
-    for df in [df_graph, df_ts, df_text]:
+    key_col = 'email_id'
+    dataframes = [
+        ('graph', df_graph),
+        ('timeseries', df_ts),
+        ('text', df_text)
+    ]
+    
+    for name, df in dataframes:
+        if key_col not in df.columns:
+            raise KeyError(f"'{key_col}' missing in {name} features. "
+                           "Please rerun data cleaning to generate row identifiers.")
         df['date'] = pd.to_datetime(df['date'])
         df.sort_values('date', inplace=True)
         df.reset_index(drop=True, inplace=True)
@@ -217,26 +232,47 @@ def merge_features(
     # Start with graph features as base
     df_merged = df_graph.copy()
     
-    # Define features to keep (avoid duplicates)
-    metadata_cols = ['date', 'label', 'sender', 'receiver', 'subject', 'body', 
-                     'sender_domain', 'timezone_region', 'full_text', 'cleaned_text', 'urls']
+    # Metadata columns should not be duplicated during merge
+    metadata_cols = [
+        'email_id', 'date', 'label', 'sender', 'receiver', 'subject', 'body',
+        'subject_clean', 'body_clean', 'sender_domain', 'timezone_region',
+        'full_text', 'cleaned_text', 'urls'
+    ]
+    metadata_cols = list(dict.fromkeys(metadata_cols))
     
-    # Add time series features
-    ts_feature_cols = [col for col in df_ts.columns if col not in df_merged.columns 
-                       and col not in metadata_cols]
-    for col in ts_feature_cols:
-        df_merged[col] = df_ts[col]
+    def _feature_count(frame: pd.DataFrame) -> int:
+        return sum(1 for col in frame.columns if col not in metadata_cols)
     
-    # Add text features
-    text_feature_cols = [col for col in df_text.columns if col not in df_merged.columns
-                        and col not in metadata_cols]
-    for col in text_feature_cols:
-        df_merged[col] = df_text[col]
+    current_cols = set(df_merged.columns)
     
-    print(f"  • Graph features: {len([c for c in df_graph.columns if c not in metadata_cols])}")
+    # Merge helper
+    def _merge_features(base_df: pd.DataFrame, new_df: pd.DataFrame):
+        feature_cols = [
+            col for col in new_df.columns
+            if col not in metadata_cols and col not in current_cols
+        ]
+        if not feature_cols:
+            return base_df, feature_cols
+        subset = new_df[[key_col] + feature_cols]
+        merged = base_df.merge(
+            subset,
+            on=key_col,
+            how='inner',
+            validate='one_to_one'
+        )
+        current_cols.update(feature_cols)
+        return merged, feature_cols
+    
+    df_merged, ts_feature_cols = _merge_features(df_merged, df_ts)
+    df_merged, text_feature_cols = _merge_features(df_merged, df_text)
+    
+    print(f"  • Graph features: {_feature_count(df_graph)}")
     print(f"  • Time series features: {len(ts_feature_cols)}")
     print(f"  • Text features: {len(text_feature_cols)}")
-    print(f"  • Total features: {len(df_merged.columns) - len(metadata_cols)}")
+    print(f"  • Total features: {_feature_count(df_merged)}")
+    
+    # Ensure chronological order after merging
+    df_merged = df_merged.sort_values('date').reset_index(drop=True)
     
     # Save merged features
     merged_path = os.path.join(output_dir, "engineered_features.csv")
@@ -258,7 +294,8 @@ def step_3_model_training(
     print_header("STEP 3: MODEL TRAINING")
     
     # Define feature columns
-    metadata_cols = ['date', 'label', 'sender', 'receiver', 'subject', 'body',
+    metadata_cols = ['email_id', 'date', 'label', 'sender', 'receiver', 'subject', 'body',
+                     'subject_clean', 'body_clean',
                      'full_text', 'cleaned_text', 'sender_domain', 'timezone_region']
     feature_cols = [col for col in df.columns if col not in metadata_cols]
     
@@ -324,8 +361,6 @@ def main():
                        help='Skip feature engineering step')
     parser.add_argument('--skip-tuning', action='store_true',
                        help='Skip hyperparameter tuning')
-    parser.add_argument('--sequential', action='store_true',
-                       help='Use sequential feature engineering (no multiprocessing)')
     parser.add_argument('--tune-iter', type=int, default=20,
                        help='Number of random search iterations for tuning')
     
@@ -336,7 +371,6 @@ def main():
     print("\n📋 Pipeline Configuration:")
     print(f"  • Data Cleaning: {'Skipped' if args.skip_cleaning else 'Enabled'}")
     print(f"  • Feature Engineering: {'Skipped' if args.skip_features else 'Enabled'}")
-    print(f"  • Parallel Processing: {'Disabled' if args.sequential else 'Enabled'}")
     print(f"  • Hyperparameter Tuning: {'Disabled' if args.skip_tuning else f'Enabled ({args.tune_iter} iterations)'}")
     
     pipeline_start = time.time()
@@ -350,7 +384,6 @@ def main():
         # Step 2: Feature Engineering
         df_features = step_2_feature_engineering(
             df_cleaned,
-            use_parallel=not args.sequential,
             skip=args.skip_features
         )
         

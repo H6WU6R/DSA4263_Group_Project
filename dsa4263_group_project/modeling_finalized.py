@@ -1,7 +1,8 @@
 # Model Training Pipeline with Baseline Tracking and Hyperparameter Tuning
+from dsa4263_group_project.config import PROCESSED_DATA_DIR, RAW_DATA_DIR
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split, RandomizedSearchCV, TimeSeriesSplit
+from sklearn.model_selection import train_test_split, RandomizedSearchCV
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression, Ridge
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
@@ -407,14 +408,12 @@ class ModelTrainer:
             
             # Perform random search
             try:
-                tscv = TimeSeriesSplit(n_splits=cv_splits)
-
                 random_search = RandomizedSearchCV(
                     estimator=base_model,
                     param_distributions=param_grid,
                     n_iter=n_iter,
                     scoring='f1',
-                    cv=tscv,
+                    cv=cv_splits,
                     random_state=self.random_state,
                     n_jobs=-1,
                     verbose=0
@@ -625,21 +624,16 @@ class ModelTrainer:
     def save_results(
         self,
         results_df: pd.DataFrame,
-        output_dir: str = '../reports'
+        filename: str = "model_results_finalized.csv"
     ):
         """
-        Save model results to CSV.
-        
+        Save model results to processed directory using config path.
         Args:
             results_df: DataFrame with all results
-            output_dir: Directory to save results
+            filename: Name of output file
         """
-        import os
-        os.makedirs(output_dir, exist_ok=True)
-        
-        output_path = os.path.join(output_dir, 'model_results_finalized.csv')
-        results_df.to_csv(output_path, index=False)
-        self._log(f"\n💾 Results saved to: {output_path}")
+        results_df.to_csv(PROCESSED_DATA_DIR / filename, index=False)
+        self._log(f"\n💾 Results saved to: {PROCESSED_DATA_DIR / filename}")
 
 
 # ============================================================================
@@ -655,54 +649,57 @@ if __name__ == '__main__':
     print("="*80)
     
     # Load merged features (assuming already created)
+    df = pd.read_csv("../data/processed/engineered_features.csv")
+    df['date'] = pd.to_datetime(df['date'])
+    
+    # Define feature columns (exclude metadata)
+    exclude_cols = ['date', 'label', 'sender', 'receiver', 'subject', 'body', 
+                   'full_text', 'cleaned_text', 'sender_domain', 'timezone_region']
+    feature_cols = [col for col in df.columns if col not in exclude_cols]
+    
+    print(f"\nDataset loaded: {len(df):,} samples, {len(feature_cols)} features")
+    
+    # Initialize trainer
+    trainer = ModelTrainer(verbose=True, random_state=42)
+    
     try:
-        df = pd.read_csv("../data/processed/engineered_features.csv")
-        df['date'] = pd.to_datetime(df['date'])
-        
-        # Define feature columns (exclude metadata)
-        exclude_cols = ['date', 'label', 'sender', 'receiver', 'subject', 'body', 
-                       'full_text', 'cleaned_text', 'sender_domain', 'timezone_region']
-        feature_cols = [col for col in df.columns if col not in exclude_cols]
-        
-        print(f"\nDataset loaded: {len(df):,} samples, {len(feature_cols)} features")
-        
-        # Initialize trainer
-        trainer = ModelTrainer(verbose=True, random_state=42)
-        
-        # Prepare data
-        X_train, X_test, y_train, y_test, _, _ = trainer.prepare_data(
-            df, feature_cols, test_size=0.2
-        )
-        
-        # Train baseline models
-        baseline_df = trainer.train_baseline_models(X_train, y_train, X_test, y_test)
-        
-        # Tune hyperparameters (on subset of models for demo)
-        tuned_df = trainer.tune_hyperparameters(
-            X_train, y_train, X_test, y_test,
-            models_to_tune=['Logistic Regression', 'Random Forest'],
-            n_iter=10,
-            cv_splits=3
-        )
-        
-        # Train stacking ensemble
-        ensemble_metrics, ensemble_pred = trainer.train_stacking_ensemble(
-            X_train, y_train, X_test, y_test,
-            use_tuned=True,
-            val_split=0.2
-        )
-        
-        # Compare all models
-        final_df = trainer.compare_all_models(
-            include_ensemble=True,
-            ensemble_metrics=ensemble_metrics
-        )
-        
-        # Save results
-        trainer.save_results(final_df)
-        
-        print("\n✅ Model training demo complete!")
-        
+            df = pd.read_csv(PROCESSED_DATA_DIR / "engineered_features.csv")
+            df['date'] = pd.to_datetime(df['date'])
+            # Define feature columns (exclude metadata)
+            exclude_cols = ['date', 'label', 'sender', 'receiver', 'subject', 'body', 
+                           'full_text', 'cleaned_text', 'sender_domain', 'timezone_region']
+            feature_cols = [col for col in df.columns if col not in exclude_cols]
+            print(f"\nDataset loaded: {len(df):,} samples, {len(feature_cols)} features")
+            # Initialize trainer
+            trainer = ModelTrainer(verbose=True, random_state=42)
+            # Prepare data
+            X_train, X_test, y_train, y_test, _, _ = trainer.prepare_data(
+                df, feature_cols, test_size=0.2
+            )
+            # Train baseline models
+            baseline_df = trainer.train_baseline_models(X_train, y_train, X_test, y_test)
+            # Tune hyperparameters (on subset of models for demo)
+            tuned_df = trainer.tune_hyperparameters(
+                X_train, y_train, X_test, y_test,
+                models_to_tune=['Logistic Regression', 'Random Forest'],
+                n_iter=10,
+                cv_splits=3
+            )
+            # Train stacking ensemble
+            ensemble_metrics, ensemble_pred = trainer.train_stacking_ensemble(
+                X_train, y_train, X_test, y_test,
+                use_tuned=True,
+                val_split=0.2
+            )
+            # Compare all models
+            final_df = trainer.compare_all_models(
+                include_ensemble=True,
+                ensemble_metrics=ensemble_metrics
+            )
+            # Save results
+            trainer.save_results(final_df)
+            print("\n✅ Model training demo complete!")
     except FileNotFoundError:
         print("\n⚠️  Feature file not found. Please run feature engineering first.")
-        print("   Expected: ../data/processed/engineered_features.csv")
+        print(f"   Expected: {PROCESSED_DATA_DIR / 'engineered_features.csv'}")
+        print("\n⚠️  Feature file not found. Please run feature engineering first.")
