@@ -259,9 +259,9 @@ class FeatureEngineer:
 			.reset_index(level=0, drop=True)
 		)
 		
-		# Fill NaN (first occurrence of each group) with global mean
-		global_mean = df[value_col].mean()
-		risk_scores = risk_scores.fillna(global_mean)
+		# Fill NaN (first occurrence of each group) with a past-only global prior
+		global_prior = df[value_col].expanding().mean().shift(1).fillna(0.0)
+		risk_scores = risk_scores.fillna(global_prior)
 		
 		return risk_scores
 	
@@ -288,11 +288,11 @@ class FeatureEngineer:
 		)
 		
 		# Historical phishing rate
-		global_mean = df['label'].mean()
+		global_prior = df['label'].expanding().mean().shift(1).fillna(0.0)
 		df['sender_historical_phishing_rate'] = np.where(
 			df['sender_historical_count'] > 0,
 			df['sender_historical_spam_count'] / df['sender_historical_count'],
-			global_mean
+			global_prior
 		)
 		
 		# Time gap between emails from same sender
@@ -547,11 +547,11 @@ class FeatureEngineer:
 		)
 		
 		# Domain spam rate
-		global_spam_rate = df['label'].mean()
+		global_prior = df['label'].expanding().mean().shift(1).fillna(0.0)
 		df['domain_spam_rate'] = np.where(
 			df['domain_email_count'] > 0,
 			df['domain_spam_cumsum'] / df['domain_email_count'],
-			global_spam_rate
+			global_prior
 		)
 		
 		# Derived features
