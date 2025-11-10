@@ -5,11 +5,17 @@
 
 import pandas as pd
 
-# Use relative paths for the four raw CSV files
-ceas_df = pd.read_csv("../data/raw/CEAS_08.csv")
-nazario_df = pd.read_csv("../data/raw/Nazario.csv")
-nigerian_df = pd.read_csv("../data/raw/Nigerian_Fraud.csv")
-spamassassin_df = pd.read_csv("../data/raw/SpamAssasin.csv")
+from dsa4263_group_project.config import (
+    PROCESSED_DATA_DIR,
+    RAW_DATA_DIR,
+    ensure_directories,
+)
+
+# Use package configuration for the four raw CSV files
+ceas_df = pd.read_csv(RAW_DATA_DIR / "CEAS_08.csv")
+nazario_df = pd.read_csv(RAW_DATA_DIR / "Nazario.csv")
+nigerian_df = pd.read_csv(RAW_DATA_DIR / "Nigerian_Fraud.csv")
+spamassassin_df = pd.read_csv(RAW_DATA_DIR / "SpamAssasin.csv")
 
 # %%
 
@@ -33,14 +39,17 @@ spamassassin_df = fill_receiver_and_drop_sender(spamassassin_df)
 merged_df = pd.concat([ceas_df, nazario_df, nigerian_df, spamassassin_df], ignore_index=True)
 
 
+# Ensure required directories exist before writing outputs
+ensure_directories()
+
 # Output to processed folder as graph_merge.csv
-output_path = "../data/processed/graph_merge.csv"
+output_path = PROCESSED_DATA_DIR / "graph_merge.csv"
 merged_df.to_csv(output_path, index=False)
 print(f"Merged data saved to {output_path}")
 
 # Output another file with rows missing 'date' dropped
 merged_nodate_df = merged_df.dropna(subset=["date"])
-output_nodate_path = "../data/processed/date_merge.csv"
+output_nodate_path = PROCESSED_DATA_DIR / "date_merge.csv"
 merged_nodate_df.to_csv(output_nodate_path, index=False)
 print(f"Merged data with no missing date saved to {output_nodate_path}")
 # %%
