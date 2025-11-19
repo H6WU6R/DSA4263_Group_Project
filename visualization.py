@@ -1,8 +1,3 @@
-"""
-Graph Visualization Module
-===========================
-Produces comprehensive visualizations for email spam detection analysis.
-"""
 
 import pandas as pd
 import networkx as nx
@@ -48,15 +43,28 @@ class EmailGraphVisualizer:
         self.legit_color = '#5AC8A8'   # Soft Aqua
         self.accent_color = '#6C7A89'  # Modern Grey
         
-    def create_dashboard(self, save_path: Optional[str] = None) -> None:
+    def create_dashboard(self, save_path: Optional[str] = None, save_individual: bool = True, 
+                        individual_dir: str = 'individual_panels') -> None:
         """
         Create comprehensive 8-panel visualization dashboard.
         
         Args:
-            save_path: Optional path to save the figure
+            save_path: Optional path to save the complete dashboard figure
+            save_individual: If True, save each panel as a separate figure
+            individual_dir: Directory to save individual panel figures
         """
         print("Creating comprehensive dashboard...")
         
+        # Create directory for individual panels if needed
+        if save_individual:
+            import os
+            os.makedirs(individual_dir, exist_ok=True)
+        
+        # ============================================================================
+        # VISUALIZATION DASHBOARD (Academic Style, No Emojis)
+        # ============================================================================
+        
+        # Create dashboard
         fig = plt.figure(figsize=(20, 10))
         fig.patch.set_facecolor('#FAFAFA')
         fig.suptitle('Email Spam Detection: Graph-Based Analysis Dashboard', 
@@ -66,38 +74,121 @@ class EmailGraphVisualizer:
         spam_df = self.features_df[self.features_df['is_spammer'] == 1]
         legit_df = self.features_df[self.features_df['is_spammer'] == 0]
         
+        spam_color  = '#FF6F61'   # Living Coral
+        legit_color = '#5AC8A8'   # Soft Aqua
+        accent_color = '#6C7A89'  # Modern Grey
+        
+        # Update instance colors to match
+        self.spam_color = spam_color
+        self.legit_color = legit_color
+        self.accent_color = accent_color
+        
         # Panel 1: Sender Distribution
-        self._plot_sender_distribution(plt.subplot(2, 4, 1), spam_df, legit_df)
+        ax1 = plt.subplot(2, 4, 1)
+        self._plot_sender_distribution(ax1, spam_df, legit_df)
         
         # Panel 2: Out-Degree Distribution
-        self._plot_out_degree_distribution(plt.subplot(2, 4, 2), spam_df, legit_df)
+        ax2 = plt.subplot(2, 4, 2)
+        self._plot_out_degree_distribution(ax2, spam_df, legit_df)
         
         # Panel 3: Reciprocity Comparison
-        self._plot_reciprocity_violin(plt.subplot(2, 4, 3), spam_df, legit_df)
+        ax3 = plt.subplot(2, 4, 3)
+        self._plot_reciprocity_violin(ax3, spam_df, legit_df)
         
         # Panel 4: In-Degree vs Out-Degree
-        self._plot_degree_scatter(plt.subplot(2, 4, 4), spam_df, legit_df)
+        ax4 = plt.subplot(2, 4, 4)
+        self._plot_degree_scatter(ax4, spam_df, legit_df)
         
         # Panel 5: Clustering Coefficient
-        self._plot_clustering(plt.subplot(2, 4, 5), spam_df, legit_df)
+        ax5 = plt.subplot(2, 4, 5)
+        self._plot_clustering(ax5, spam_df, legit_df)
         
-        # Panel 6: Triangles
-        self._plot_triangles(plt.subplot(2, 4, 6), spam_df, legit_df)
-        
+        # Panel 6: Triangle Participation
+    
         # Panel 7: Network Visualization
-        self._plot_network_sample(plt.subplot(2, 4, 7), spam_df)
+        ax7 = plt.subplot(2, 4, 7)
+        self._plot_network_sample(ax7, spam_df)
         
         # Panel 8: Key Insights
-        self._plot_key_insights(plt.subplot(2, 4, 8))
+        ax8 = plt.subplot(2, 4, 8)
+        self._plot_key_insights(ax8)
         
+        # ============================================================================
         plt.tight_layout()
         
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches='tight', facecolor='#FAFAFA')
-            print(f"Dashboard saved to {save_path}")
+            print(f"✓ Dashboard saved to {save_path}")
+        
+        # Save individual panels AFTER the main dashboard is created
+        if save_individual:
+            self._save_all_individual_panels(spam_df, legit_df, individual_dir)
         
         plt.show()
         print("✓ Dashboard created successfully!\n")
+    
+    def _save_all_individual_panels(self, spam_df, legit_df, individual_dir: str) -> None:
+        """
+        Save each panel as a separate, properly sized figure.
+        
+        Args:
+            spam_df: DataFrame with spam sender features
+            legit_df: DataFrame with legitimate sender features  
+            individual_dir: Directory to save individual panel figures
+        """
+        print("Saving individual panels...")
+        
+        # Panel 1: Sender Distribution
+        fig1, ax1 = plt.subplots(figsize=(8, 6))
+        self._plot_sender_distribution(ax1, spam_df, legit_df)
+        plt.tight_layout()
+        plt.savefig(f"{individual_dir}/panel1_sender_distribution.png", dpi=300, bbox_inches='tight', facecolor='white')
+        plt.close(fig1)
+        
+        # Panel 2: Out-Degree Distribution
+        fig2, ax2 = plt.subplots(figsize=(8, 6))
+        self._plot_out_degree_distribution(ax2, spam_df, legit_df)
+        plt.tight_layout()
+        plt.savefig(f"{individual_dir}/panel2_out_degree.png", dpi=300, bbox_inches='tight', facecolor='white')
+        plt.close(fig2)
+        
+        # Panel 3: Reciprocity Comparison
+        fig3, ax3 = plt.subplots(figsize=(8, 6))
+        self._plot_reciprocity_violin(ax3, spam_df, legit_df)
+        plt.tight_layout()
+        plt.savefig(f"{individual_dir}/panel3_reciprocity.png", dpi=300, bbox_inches='tight', facecolor='white')
+        plt.close(fig3)
+        
+        # Panel 4: In-Degree vs Out-Degree
+        fig4, ax4 = plt.subplots(figsize=(8, 6))
+        self._plot_degree_scatter(ax4, spam_df, legit_df)
+        plt.tight_layout()
+        plt.savefig(f"{individual_dir}/panel4_degree_scatter.png", dpi=300, bbox_inches='tight', facecolor='white')
+        plt.close(fig4)
+        
+        # Panel 5: Clustering Coefficient
+        fig5, ax5 = plt.subplots(figsize=(8, 6))
+        self._plot_clustering(ax5, spam_df, legit_df)
+        plt.tight_layout()
+        plt.savefig(f"{individual_dir}/panel5_clustering.png", dpi=300, bbox_inches='tight', facecolor='white')
+        plt.close(fig5)
+        
+ 
+        # Panel 7: Network Visualization
+        fig7, ax7 = plt.subplots(figsize=(8, 6))
+        self._plot_network_sample(ax7, spam_df)
+        plt.tight_layout()
+        plt.savefig(f"{individual_dir}/panel7_network_sample.png", dpi=300, bbox_inches='tight', facecolor='white')
+        plt.close(fig7)
+        
+        # Panel 8: Key Insights
+        fig8, ax8 = plt.subplots(figsize=(8, 6))
+        self._plot_key_insights(ax8)
+        plt.tight_layout()
+        plt.savefig(f"{individual_dir}/panel8_key_insights.png", dpi=300, bbox_inches='tight', facecolor='white')
+        plt.close(fig8)
+        
+        print(f"✓ All individual panels saved to {individual_dir}/")
     
     def _plot_sender_distribution(self, ax, spam_df, legit_df):
         """Panel 1: Pie chart of sender distribution."""
@@ -253,8 +344,8 @@ class EmailGraphVisualizer:
         ax.set_facecolor('white')
         
         tri_means = [
-            spam_df['triangles'].mean() if 'triangles' in spam_df.columns else 0,
-            legit_df['triangles'].mean() if 'triangles' in legit_df.columns else 0
+            spam_df['triangles'].mean(),
+            legit_df['triangles'].mean()
         ]
         
         bars = ax.bar(['Spam', 'Legit'], [tri_means[0] + 1e-6, tri_means[1]],
@@ -508,19 +599,23 @@ differences between spam and legitimate senders.
         print("✓ Flow graph created successfully!\n")
     
     def create_all_figures(self, dashboard_path: str = 'spam_eda_dashboard.png',
-                          flow_path: str = 'spam_flow_graph.png') -> None:
+                          flow_path: str = 'spam_flow_graph.png',
+                          save_individual: bool = True,
+                          individual_dir: str = 'individual_panels') -> None:
         """
         Create all visualizations.
         
         Args:
             dashboard_path: Path to save the dashboard figure
             flow_path: Path to save the flow graph figure
+            save_individual: If True, save each dashboard panel separately
+            individual_dir: Directory to save individual panel figures
         """
         print("="*70)
         print(" CREATING ALL VISUALIZATIONS")
         print("="*70 + "\n")
         
-        self.create_dashboard(dashboard_path)
+        self.create_dashboard(dashboard_path, save_individual, individual_dir)
         self.create_flow_graph(flow_path)
         
         print("="*70)
@@ -531,7 +626,9 @@ differences between spam and legitimate senders.
 # Convenience function for quick usage
 def visualize_email_graph(features_df: pd.DataFrame, G: nx.DiGraph, df: pd.DataFrame,
                           dashboard_path: str = 'spam_eda_dashboard.png',
-                          flow_path: str = 'spam_flow_graph.png') -> None:
+                          flow_path: str = 'spam_flow_graph.png',
+                          save_individual: bool = True,
+                          individual_dir: str = 'individual_panels') -> None:
     """
     Quick function to create all visualizations.
     
@@ -541,6 +638,8 @@ def visualize_email_graph(features_df: pd.DataFrame, G: nx.DiGraph, df: pd.DataF
         df: Original email dataframe
         dashboard_path: Path to save the dashboard figure
         flow_path: Path to save the flow graph figure
+        save_individual: If True, save each dashboard panel separately
+        individual_dir: Directory to save individual panel figures
         
     Example:
         >>> from feature_extraction import EmailGraphFeatureExtractor
@@ -551,7 +650,7 @@ def visualize_email_graph(features_df: pd.DataFrame, G: nx.DiGraph, df: pd.DataF
         >>> visualize_email_graph(features_df, extractor.G, extractor.df)
     """
     visualizer = EmailGraphVisualizer(features_df, G, df)
-    visualizer.create_all_figures(dashboard_path, flow_path)
+    visualizer.create_all_figures(dashboard_path, flow_path, save_individual, individual_dir)
 
 
 if __name__ == "__main__":
@@ -565,9 +664,14 @@ if __name__ == "__main__":
     print("  features_df = extractor.get_features('data.csv')")
     print("")
     print("  visualizer = EmailGraphVisualizer(features_df, extractor.G, extractor.df)")
-    print("  visualizer.create_dashboard('dashboard.png')")
+    print("  visualizer.create_dashboard('dashboard.png', save_individual=True)")
     print("  visualizer.create_flow_graph('flow.png')")
     print("")
     print("Or use the convenience function:")
     print("  from visualization import visualize_email_graph")
     print("  visualize_email_graph(features_df, extractor.G, extractor.df)")
+    print("")
+    print("This will create:")
+    print("  - dashboard.png (complete 8-panel dashboard)")
+    print("  - flow.png (communication flow graph)")
+    print("  - individual_panels/ folder with 8 separate panel images")
