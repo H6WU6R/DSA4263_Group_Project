@@ -327,3 +327,55 @@ class TemporalFeatureEngineer:
 		df = self.add_sender_temporal_features(df, sender_col=sender_col, date_col=date_col)
 
 		return df
+	
+	def create_model_features(self, df: pd.DataFrame,
+	                         sender_col: str = 'sender',
+	                         date_col: str = 'date',
+	                         label_col: str = 'label',
+	                         tz_offset_col: str = 'timezone_offset') -> pd.DataFrame:
+		"""
+		Create only the 7 model-ready features and drop timezone_offset.
+		
+		This method creates a clean dataset with only the features needed for modeling:
+		
+		**Baseline Temporal (2 features):**
+		- hour: Hour of day (0-23)
+		- is_night: Binary flag for nighttime hours (22:00-06:00)
+		
+		**Regional Features (1 feature):**
+		- timezone_region: Geographic region (Americas, Europe/Africa, Middle East/South Asia, 
+		                   APAC, Oceania/Pacific, Unknown)
+		
+		**Sender Behavioral Patterns (4 features):**
+		- sender_historical_phishing_rate: Time-aware historical phishing rate
+		- sender_historical_count: Number of previous emails from sender
+		- current_time_gap: Minutes since sender's last email (time-aware)
+		- sender_time_gap_std: Std dev of historical time gaps in minutes (time-aware)
+		
+		**IMPORTANT**: 
+		- All sender features are TIME-AWARE to prevent data leakage
+		- timezone_offset is dropped after creating timezone_region
+		- Returns only model-ready features (drops descriptive columns)
+		
+		Args:
+			df: DataFrame with required columns (date, timezone_offset, sender, label, hour)
+			sender_col: Name of sender column
+			date_col: Name of date column
+			label_col: Name of label column
+			tz_offset_col: Name of timezone offset column
+			
+		Returns:
+			DataFrame with only the 7 model features + original columns except timezone_offset
+		"""
+		df = df.copy()
+		
+		# Step 1: Add timezone region and drop timezone_offset
+		df = self.add_timezone_region(df, tz_offset_col=tz_offset_col, drop_offset=True)
+		
+		# Step 2: Add all advanced temporal features
+		df = self.add_all_advanced_features(df, sender_col=sender_col, 
+		                                   date_col=date_col,
+		                                   label_col=label_col, 
+		                                   hour_col='hour')
+		
+		return df
