@@ -1,6 +1,6 @@
-# Template class for data cleaning (date and text)
 import pandas as pd
 import re
+from email.utils import parsedate_to_datetime
 
 class DataCleaner:
 	"""
@@ -8,6 +8,7 @@ class DataCleaner:
 	Includes:
 	  - Date cleaning (timezone, parsing, anomaly removal)
 	  - Text cleaning (body, subject, etc.)
+	
 	"""
 	def __init__(self, stop_words=None, lemmatizer=None):
 		self.stop_words = stop_words
@@ -28,52 +29,75 @@ class DataCleaner:
 
 		return df
 	
-	def _parse_timezone_offset(self, tz_str):
-		"""Convert timezone string like '+0800' or '-0700' to hours."""
-		if pd.isna(tz_str):
-			return 0.0
-		try:
-			sign = 1 if tz_str[0] == '+' else -1
-			hours = int(tz_str[1:3])
-			minutes = int(tz_str[3:5])
-			return sign * (hours + minutes / 60.0)
-		except (ValueError, IndexError):
-			return 0.0
 
-	def _get_simple_region(self, offset_hours):
-		"""Map timezone offset to region."""
-		if pd.isna(offset_hours):
-			return 'Unknown'
-		elif -12 <= offset_hours < -4:
-			return 'Americas'
-		elif -4 <= offset_hours <= 2:
-			return 'Europe/Africa'
-		elif 2 < offset_hours <= 6:
-			return 'Middle East/South Asia'
-		elif 6 < offset_hours <= 10:
-			return 'APAC'
-		elif 10 < offset_hours <= 14:
-			return 'Oceania/Pacific'
-		else:
-			return 'Unknown'
+	def _parse_email_date_flexible(self, date_str):
+		"""
+		Flexible RFC-5322 email date parser with fallback for dates without day names.
+		
+		This is more robust than strict format strings and matches the behavior
+		of the original notebook's parse_email_date_preserve_tz function.
+		
+		Handles:
+		  - "Tue, 05 Aug 2008 16:31:02 -0700" (standard with day name)
+		  - "05 Aug 2008 16:31:02 -0700" (missing day name)
+		  - "Tue, 05 Aug 2008 16:31:02" (no timezone)
+		  - Various other RFC-5322 compliant formats
+		"""
+		try:
+			# Try standard RFC-5322 parsing
+			dt = parsedate_to_datetime(date_str)
+			# Convert to timezone-naive UTC
+			return dt.replace(tzinfo=None) if dt.tzinfo is None else dt.astimezone(None).replace(tzinfo=None)
+		except:
+			pass
+		
+		try:
+			# Fallback: Remove day name prefix and retry
+			# Handles dates like "05 Aug 2008 16:31:02 -0700"
+			cleaned = re.sub(r'^\w{3},\s*', '', str(date_str))
+			dt = parsedate_to_datetime(cleaned)
+			return dt.replace(tzinfo=None) if dt.tzinfo is None else dt.astimezone(None).replace(tzinfo=None)
+		except:
+			return pd.NaT
 
 	def clean_dates(self, df: pd.DataFrame, date_col: str = 'date') -> pd.DataFrame:
 		"""
-		Clean and standardize date columns, extract timezone, remove anomalies.
+		Parse and clean date column, extract timezone offset.
+
+		Key behaviors:
+		- Unparseable/missing dates → dropped from dataset
+		- Missing timezones → timezone_offset will be NaN 
+
+
+		Args:
+			df: Input DataFrame
+			date_col: Name of the date column to clean
+
+		Returns:
+			DataFrame with:
+			- Cleaned date column (datetime type)
+			- timezone_offset column (string like '+0800', '-0700', or NaN if missing)
 		"""
 		df = df.copy()
+
+		# Extract timezone offset BEFORE parsing (keep as string)
 		df['timezone_offset'] = df[date_col].astype(str).str.extract(r'([+-]\d{4})$')[0]
-		df['timezone_hours'] = df['timezone_offset'].apply(self._parse_timezone_offset)
-		try:
-			df[date_col] = pd.to_datetime(df[date_col], format='%a, %d %b %Y %H:%M:%S %z', errors='coerce', utc=True)
-		except Exception:
-			df[date_col] = pd.to_datetime(df[date_col], errors='coerce', utc=True)
-		df[date_col] = df[date_col].dt.tz_localize(None)
-		df['timezone_region'] = df['timezone_hours'].apply(self._get_simple_region)
-		min_valid_date = pd.Timestamp('1990-01-01')
-		max_valid_date = pd.Timestamp('2025-12-31')
-		df = df[(df[date_col] >= min_valid_date) & (df[date_col] <= max_valid_date)].copy()
-		df = df.drop(columns=['timezone_offset', 'timezone_hours'], errors='ignore')
+
+		# Parse dates using flexible RFC-5322 parser
+		df[date_col] = df[date_col].apply(self._parse_email_date_flexible)
+
+		# Ensure date column is datetime type
+		df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
+
+		# Drop rows with missing/unparseable dates
+		initial_count = len(df)
+		df = df.dropna(subset=[date_col])
+		dropped_count = initial_count - len(df)
+		if dropped_count > 0:
+			print(f"Dropped {dropped_count:,} rows with missing/unparseable dates ({dropped_count/initial_count*100:.2f}%)")
+
+		# Keep timezone_offset column (do NOT drop it)
+		# Geographic processing should be done separately using GeographicProcessor
 		return df
 
 	def clean_text(self, text: str) -> str:
