@@ -83,7 +83,10 @@ class FeatureEngineer:
 			'in_degree': 0,
 			'total_degree': 0,
 			'reciprocity': 0.0,
-			'avg_weight': 0.0
+			'avg_weight': 0.0,
+			'clustering': 0.0,
+			'eigenvector': 0.0,
+			'closeness': 0.0
 		}
 		
 		if node not in G:
@@ -96,15 +99,40 @@ class FeatureEngineer:
 		features['in_degree'] = in_deg
 		features['total_degree'] = out_deg + in_deg
 		
-		# Compute reciprocity (what % of my outgoing edges have incoming edges)
+		# Compute reciprocity: How many recipients have mutual connections?
+		# (following feature_extraction.py formula)
 		receivers = list(G.successors(node))
 		if receivers:
-			reciprocal_count = sum([1 for r in receivers if G.has_edge(r, node)])
+			reciprocal_count = sum(1 for r in receivers if G.has_edge(r, node))
 			features['reciprocity'] = reciprocal_count / len(receivers)
 			
 			# Average weight of outgoing edges
 			weights = [G[node][r]['weight'] for r in receivers]
 			features['avg_weight'] = np.mean(weights)
+		
+		# Compute clustering coefficient (only if node has degree > 0)
+		if G.number_of_nodes() > 1:
+			try:
+				G_undirected = G.to_undirected()
+				features['clustering'] = nx.clustering(G_undirected, node)
+			except:
+				features['clustering'] = 0.0
+		
+		# Compute closeness centrality
+		if G.number_of_nodes() > 1:
+			try:
+				closeness = nx.closeness_centrality(G)
+				features['closeness'] = closeness.get(node, 0.0)
+			except:
+				features['closeness'] = 0.0
+		
+		# Compute eigenvector centrality
+		if G.number_of_nodes() > 1:
+			try:
+				eigenvector = nx.eigenvector_centrality(G, max_iter=100)
+				features['eigenvector'] = eigenvector.get(node, 0.0)
+			except:
+				features['eigenvector'] = 0.0
 		
 		return features
 	
@@ -174,7 +202,10 @@ class FeatureEngineer:
 			'sender_in_degree',
 			'sender_total_degree',
 			'sender_reciprocity',
-			'sender_avg_weight'
+			'sender_avg_weight',
+			'sender_clustering',
+			'sender_eigenvector',
+			'sender_closeness'
 		]
 		
 		for col in graph_feature_cols:
@@ -195,6 +226,9 @@ class FeatureEngineer:
 			df.loc[idx, 'sender_total_degree'] = features['total_degree']
 			df.loc[idx, 'sender_reciprocity'] = features['reciprocity']
 			df.loc[idx, 'sender_avg_weight'] = features['avg_weight']
+			df.loc[idx, 'sender_clustering'] = features['clustering']
+			df.loc[idx, 'sender_eigenvector'] = features['eigenvector']
+			df.loc[idx, 'sender_closeness'] = features['closeness']
 			
 			# Add current edge to graph for future iterations
 			if G.has_edge(current_sender, current_receiver):
@@ -206,6 +240,9 @@ class FeatureEngineer:
 		df = self._compute_sender_history(df)
 		
 		self._log(f"✅ Graph features computed: {len(graph_feature_cols) + 4} features")
+		self._log(f"   Basic: out_degree, in_degree, total_degree, reciprocity, avg_weight")
+		self._log(f"   Centrality: clustering, eigenvector, closeness")
+		self._log(f"   Historical: email_count, spam_count, spam_rate, time_since_last_email")
 		
 		return df
 	
