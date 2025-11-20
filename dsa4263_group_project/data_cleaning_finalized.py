@@ -12,16 +12,18 @@ class DataCleaner:
 	- Text cleaning: lowercase, punctuation removal, stopwords, lemmatization
 	"""
 	
-	def __init__(self, stop_words=None, lemmatizer=None):
+	def __init__(self, stop_words=None, lemmatizer=None, stemmer=None):
 		"""
 		Initialize DataCleaner.
 		
 		Args:
 			stop_words: Set/list of stopwords to remove (optional)
 			lemmatizer: Lemmatizer object with .lemmatize() method (optional)
+			stemmer: Stemmer object with .stem() method (optional)
 		"""
 		self.stop_words = stop_words
 		self.lemmatizer = lemmatizer
+		self.stemmer = stemmer
 
 	@staticmethod
 	def load_raw_data(filename: str) -> pd.DataFrame:
@@ -41,38 +43,53 @@ class DataCleaner:
 		from dsa4263_group_project.config import PROCESSED_DATA_DIR
 		df.to_csv(PROCESSED_DATA_DIR / filename, index=False)
 
-	def clean_and_merge(self, df, sender_col='sender', receiver_col='receiver'):
+	def clean_and_merge(self, dfs, sender_col='sender', receiver_col='receiver'):
 		"""
-		Fill missing receiver values with unique labels and drop rows where sender is missing.
-		
+		Clean and merge a list of DataFrames:
+		- Fill missing receiver values with unique labels
+		- Drop rows where sender is missing
+		- Fill missing subject/body with empty strings
+		- Combine subject and body into 'full_text'
+		- Merge all DataFrames into one
+
 		Args:
-			df: Input DataFrame
+			dfs: List of DataFrames to clean and merge
 			sender_col: Sender column name
 			receiver_col: Receiver column name
-		
+
 		Returns:
-			DataFrame with missing receivers filled, missing senders removed
+			Merged and cleaned DataFrame
 		"""
-		initial_count = len(df)
-		df = df.copy()
-		
-		# Fill missing receivers
-		na_indices = df[df[receiver_col].isnull()].index
-		receiver_filled = len(na_indices)
-		for i, idx in enumerate(na_indices, 1):
-			df.at[idx, receiver_col] = f"na{i}"
-		
-		if receiver_filled > 0:
-			print(f"Receivers filled         : {receiver_filled:,} missing values ({receiver_filled/initial_count*100:.2f}%)")
-		
-		# Drop missing senders
-		sender_missing = df[sender_col].isnull().sum()
-		df = df.dropna(subset=[sender_col])
-		
-		if sender_missing > 0:
-			print(f"Dropped                  : {sender_missing:,} missing senders ({sender_missing/initial_count*100:.2f}%)")
-		
-		return df
+		cleaned_dfs = []
+
+		for df in dfs:
+			df = df.copy()
+			# Fill missing receivers
+			na_indices = df[df[receiver_col].isnull()].index
+			for i, idx in enumerate(na_indices, 1):
+				df.at[idx, receiver_col] = f"na{i}"
+			# Drop missing senders
+			df = df.dropna(subset=[sender_col])
+
+			# Fill missing subject and body
+			if 'subject' in df.columns:
+				df['subject'] = df['subject'].fillna('')
+			if 'body' in df.columns:
+				df['body'] = df['body'].fillna('')
+				
+			# Combine subject and body
+			if 'subject' in df.columns and 'body' in df.columns:
+				df['full_text'] = df['subject'] + " " + df['body']
+			elif 'body' in df.columns:
+				df['full_text'] = df['body']
+			elif 'subject' in df.columns:
+				df['full_text'] = df['subject']
+
+			cleaned_dfs.append(df)
+			
+		# Merge all cleaned DataFrames
+		merged_df = pd.concat(cleaned_dfs, ignore_index=True)
+		return merged_df
 
 	def _parse_email_date_flexible(self, date_str):
 		"""
@@ -204,9 +221,20 @@ class DataCleaner:
 		except (AttributeError, TypeError):
 			return text
 
+	def _stem_text(self, text):
+		"""Stem tokens using configured stemmer."""
+		if not self.stemmer:
+			return text
+		try:
+			tokens = text.split()
+			stemmed = [self.stemmer.stem(w) for w in tokens]
+			return ' '.join(stemmed)
+		except (AttributeError, TypeError):
+			return text
+
 	def clean_text(self, text: str) -> str:
 		"""
-		Clean email text: lowercase → remove punctuation → stopwords → lemmatize.
+		Clean email text: lowercase → remove punctuation → stopwords → lemmatize → stem.
 		
 		Args:
 			text: Raw text string
@@ -236,6 +264,9 @@ class DataCleaner:
 		
 		# Lemmatize
 		text = self._lemmatize_text(text)
+		
+		# Stem
+		text = self._stem_text(text)
 		
 		return text
 
@@ -288,7 +319,9 @@ class DataCleaner:
 		
 		# Step 1: Handle missing values
 		print("[Step 1/3] Missing Value Handling")
-		df = self.clean_and_merge(df, sender_col=sender_col, receiver_col=receiver_col)
+		# Ensure input is a list for clean_and_merge
+		input_data = [df] if isinstance(df, pd.DataFrame) else df
+		df = self.clean_and_merge(input_data, sender_col=sender_col, receiver_col=receiver_col)
 		after_missing = len(df)
 		print()
 		
