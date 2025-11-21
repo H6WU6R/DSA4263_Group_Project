@@ -666,6 +666,311 @@ class FeatureEngineer:
 		"""
 		df.to_csv(PROCESSED_DATA_DIR / output_path, index=False)
 		self._log(f"💾 Features saved to: {output_path}")
+	
+	# ============================================================================
+	# ABLATION STUDY METHODS
+	# ============================================================================
+	
+	def select_best_feature_group(
+		self, 
+		ablation_results: pd.DataFrame, 
+		feature_groups: dict,
+		metric: str = 'F1-Score'
+	) -> Tuple[str, list, pd.Series]:
+		"""
+		Automatically select the best feature group based on a specified metric.
+		
+		Args:
+			ablation_results: DataFrame returned by ablation study methods
+			feature_groups: Dictionary mapping group names to feature lists
+			metric: Metric to use for selection (default: 'F1-Score')
+		
+		Returns:
+			Tuple of (best group name, feature list, metrics row)
+		"""
+		if metric not in ablation_results.columns:
+			raise ValueError(f"Metric '{metric}' not found in results. Available: {ablation_results.columns.tolist()}")
+		
+		best_idx = ablation_results[metric].idxmax()
+		best_row = ablation_results.iloc[best_idx]
+		best_group = best_row['Feature Group']
+		best_features = feature_groups[best_group]
+		
+		self._log(f"\n🏆 BEST FEATURE GROUP SELECTED")
+		self._log(f"   Group: {best_group}")
+		self._log(f"   Num Features: {len(best_features)}")
+		self._log(f"   {metric}: {best_row[metric]:.4f}")
+		self._log(f"   Accuracy: {best_row['Accuracy']:.4f}")
+		self._log(f"   Precision: {best_row['Precision']:.4f}")
+		self._log(f"   Recall: {best_row['Recall']:.4f}")
+		
+		return best_group, best_features, best_row
+	
+	def graph_feature_ablation_study(self, df: pd.DataFrame, label_col: str = 'label') -> pd.DataFrame:
+		"""
+		Ablation study for graph features using logistic regression.
+		
+		Args:
+			df: DataFrame with graph features computed
+			label_col: Name of label column
+		
+		Returns:
+			DataFrame with metrics for each feature group
+		"""
+		from sklearn.linear_model import LogisticRegression
+		from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+		from sklearn.model_selection import train_test_split
+		
+		self._log("\n" + "="*80)
+		self._log("GRAPH FEATURE ABLATION STUDY")
+		self._log("="*80)
+		
+		# Define feature groups
+		feature_groups = {
+			'Basic': [
+				'sender_out_degree', 'sender_in_degree', 
+				'sender_total_degree', 'sender_reciprocity'
+			],
+			'Basic + Advanced': [
+				'sender_out_degree', 'sender_in_degree', 
+				'sender_total_degree', 'sender_reciprocity',
+				'sender_clustering', 'sender_eigenvector', 
+				'sender_closeness', 'sender_avg_weight'
+			],
+			'Basic + Historical': [
+				'sender_out_degree', 'sender_in_degree', 
+				'sender_total_degree', 'sender_reciprocity',
+				'sender_historical_email_count', 'sender_historical_spam_count',
+				'sender_historical_spam_rate', 'sender_time_since_last_email'
+			],
+			'All': [
+				'sender_out_degree', 'sender_in_degree', 
+				'sender_total_degree', 'sender_reciprocity', 'sender_avg_weight',
+				'sender_clustering', 'sender_eigenvector', 'sender_closeness',
+				'sender_historical_email_count', 'sender_historical_spam_count',
+				'sender_historical_spam_rate', 'sender_time_since_last_email'
+			]
+		}
+		
+		results = []
+		y = df[label_col]
+		
+		# Store feature_groups as instance variable for use with select_best_feature_group
+		self._graph_feature_groups = feature_groups
+		
+		for name, features in feature_groups.items():
+			# Check if all features exist
+			missing_features = [f for f in features if f not in df.columns]
+			if missing_features:
+				self._log(f"⚠️  Skipping '{name}': missing features {missing_features}")
+				continue
+			
+			self._log(f"\n[{name}] Testing {len(features)} features...")
+			X = df[features]
+			X_train, X_test, y_train, y_test = train_test_split(
+				X, y, test_size=0.2, random_state=42, stratify=y
+			)
+			
+			model = LogisticRegression(max_iter=1000, solver='saga', random_state=42)
+			model.fit(X_train, y_train)
+			y_pred = model.predict(X_test)
+			
+			metrics = {
+				'Feature Group': name,
+				'Num Features': len(features),
+				'Accuracy': accuracy_score(y_test, y_pred),
+				'Precision': precision_score(y_test, y_pred),
+				'Recall': recall_score(y_test, y_pred),
+				'F1-Score': f1_score(y_test, y_pred)
+			}
+			results.append(metrics)
+			
+			self._log(f"  Accuracy:  {metrics['Accuracy']:.4f}")
+			self._log(f"  Precision: {metrics['Precision']:.4f}")
+			self._log(f"  Recall:    {metrics['Recall']:.4f}")
+			self._log(f"  F1-Score:  {metrics['F1-Score']:.4f}")
+		
+		results_df = pd.DataFrame(results)
+		self._log("\n✅ Graph feature ablation study complete!")
+		return results_df
+	
+	def timeseries_feature_ablation_study(self, df: pd.DataFrame, label_col: str = 'label') -> pd.DataFrame:
+		"""
+		Ablation study for time series features using logistic regression.
+		
+		Args:
+			df: DataFrame with time series features computed
+			label_col: Name of label column
+		
+		Returns:
+			DataFrame with metrics for each feature group
+		"""
+		from sklearn.linear_model import LogisticRegression
+		from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+		from sklearn.model_selection import train_test_split
+		
+		self._log("\n" + "="*80)
+		self._log("TIME SERIES FEATURE ABLATION STUDY")
+		self._log("="*80)
+		
+		# Define feature groups
+		feature_groups = {
+			'Geographic': ['hour', 'day_of_week', 'is_weekend', 'is_night'],
+			'Geographic + Behavioral': [
+				'hour', 'day_of_week', 'is_weekend', 'is_night', 'is_middle_east'
+			],
+			'Geographic + Risk Scores': [
+				'hour', 'day_of_week', 'is_weekend', 'is_night',
+				'hour_risk_score', 'weekday_risk_score'
+			],
+			'Geographic + Sender History': [
+				'hour', 'day_of_week', 'is_weekend', 'is_night',
+				'sender_historical_count', 'sender_historical_phishing_rate'
+			],
+			'Geographic + Temporal Burst': [
+				'hour', 'day_of_week', 'is_weekend', 'is_night',
+				'sender_time_gap', 'sender_time_gap_std'
+			],
+			'All': [
+				'hour', 'day_of_week', 'is_weekend', 'is_night', 'is_middle_east',
+				'hour_risk_score', 'weekday_risk_score', 'region_risk_score', 'region_hour_risk',
+				'sender_historical_count', 'sender_historical_spam_count', 
+				'sender_historical_phishing_rate', 'sender_time_gap', 
+				'sender_time_gap_std', 'sender_lifespan_days'
+			]
+		}
+		
+		results = []
+		y = df[label_col]
+		
+		# Store feature_groups as instance variable for use with select_best_feature_group
+		self._timeseries_feature_groups = feature_groups
+		
+		for name, features in feature_groups.items():
+			# Check if all features exist
+			missing_features = [f for f in features if f not in df.columns]
+			if missing_features:
+				self._log(f"⚠️  Skipping '{name}': missing features {missing_features}")
+				continue
+			
+			self._log(f"\n[{name}] Testing {len(features)} features...")
+			X = df[features]
+			X_train, X_test, y_train, y_test = train_test_split(
+				X, y, test_size=0.2, random_state=42, stratify=y
+			)
+			
+			model = LogisticRegression(max_iter=1000, solver='saga', random_state=42)
+			model.fit(X_train, y_train)
+			y_pred = model.predict(X_test)
+			
+			metrics = {
+				'Feature Group': name,
+				'Num Features': len(features),
+				'Accuracy': accuracy_score(y_test, y_pred),
+				'Precision': precision_score(y_test, y_pred),
+				'Recall': recall_score(y_test, y_pred),
+				'F1-Score': f1_score(y_test, y_pred)
+			}
+			results.append(metrics)
+			
+			self._log(f"  Accuracy:  {metrics['Accuracy']:.4f}")
+			self._log(f"  Precision: {metrics['Precision']:.4f}")
+			self._log(f"  Recall:    {metrics['Recall']:.4f}")
+			self._log(f"  F1-Score:  {metrics['F1-Score']:.4f}")
+		
+		results_df = pd.DataFrame(results)
+		self._log("\n✅ Time series feature ablation study complete!")
+		return results_df
+	
+	def text_feature_ablation_study(self, df: pd.DataFrame, label_col: str = 'label') -> pd.DataFrame:
+		"""
+		Ablation study for text features using logistic regression.
+		
+		Args:
+			df: DataFrame with text features computed
+			label_col: Name of label column
+		
+		Returns:
+			DataFrame with metrics for each feature group
+		"""
+		from sklearn.linear_model import LogisticRegression
+		from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+		from sklearn.model_selection import train_test_split
+		
+		self._log("\n" + "="*80)
+		self._log("TEXT FEATURE ABLATION STUDY")
+		self._log("="*80)
+		
+		# Define feature groups
+		feature_groups = {
+			'URL Features': ['urls', 'has_url', 'urls_log'],
+			'Domain Features': [
+				'domain_spam_rate', 'is_suspicious_domain', 
+				'domain_frequency', 'is_rare_domain'
+			],
+			'Text Length Features': [
+				'subject_length', 'body_length', 'text_length', 'word_count'
+			],
+			'Text Character Features': [
+				'uppercase_ratio', 'exclamation_count', 'dollar_count'
+			],
+			'Text Style Features': [
+				'uppercase_ratio', 'exclamation_count', 'dollar_count',
+				'special_char_total', 'digit_ratio', 'avg_word_length'
+			],
+			'Sentiment Features': ['subject_sentiment', 'body_sentiment'],
+			'All Meta Features': [
+				'urls', 'has_url', 'urls_log',
+				'domain_spam_rate', 'is_suspicious_domain', 
+				'domain_frequency', 'is_rare_domain',
+				'subject_length', 'body_length', 'text_length', 'word_count',
+				'uppercase_ratio', 'exclamation_count', 'dollar_count',
+				'special_char_total', 'digit_ratio', 'avg_word_length',
+				'subject_sentiment', 'body_sentiment'
+			]
+		}
+		
+		results = []
+		y = df[label_col]
+		
+		# Store feature_groups as instance variable for use with select_best_feature_group
+		self._text_feature_groups = feature_groups
+		
+		for name, features in feature_groups.items():
+			# Check if all features exist
+			missing_features = [f for f in features if f not in df.columns]
+			if missing_features:
+				self._log(f"⚠️  Skipping '{name}': missing features {missing_features}")
+				continue
+			
+			self._log(f"\n[{name}] Testing {len(features)} features...")
+			X = df[features]
+			X_train, X_test, y_train, y_test = train_test_split(
+				X, y, test_size=0.2, random_state=42, stratify=y
+			)
+			
+			model = LogisticRegression(max_iter=1000, solver='saga', random_state=42)
+			model.fit(X_train, y_train)
+			y_pred = model.predict(X_test)
+			
+			metrics = {
+				'Feature Group': name,
+				'Num Features': len(features),
+				'Accuracy': accuracy_score(y_test, y_pred),
+				'Precision': precision_score(y_test, y_pred),
+				'Recall': recall_score(y_test, y_pred),
+				'F1-Score': f1_score(y_test, y_pred)
+			}
+			results.append(metrics)
+			
+			self._log(f"  Accuracy:  {metrics['Accuracy']:.4f}")
+			self._log(f"  Precision: {metrics['Precision']:.4f}")
+			self._log(f"  Recall:    {metrics['Recall']:.4f}")
+			self._log(f"  F1-Score:  {metrics['F1-Score']:.4f}")
+		
+		results_df = pd.DataFrame(results)
+		self._log("\n✅ Text feature ablation study complete!")
+		return results_df
 
 
 # ============================================================================
