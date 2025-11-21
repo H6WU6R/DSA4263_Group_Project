@@ -16,6 +16,8 @@ from sklearn.metrics import (
 import warnings
 from typing import Dict, Tuple, List, Optional
 import time
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 warnings.filterwarnings('ignore')
 
@@ -49,6 +51,10 @@ class ModelTrainer:
         self.baseline_models = {}
         self.tuned_models = {}
         
+        # Track predictions for visualization
+        self.baseline_predictions = {}
+        self.tuned_predictions = {}
+        
         # Check optional libraries
         self.has_xgb = self._check_library('xgboost')
         self.has_lgbm = self._check_library('lightgbm')
@@ -75,44 +81,32 @@ class ModelTrainer:
         df: pd.DataFrame,
         feature_cols: List[str],
         label_col: str = 'label',
-        date_col: str = 'date',
         test_size: float = 0.2
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, pd.Series, pd.Series]:
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
-        Prepare data with time-based train-test split and scaling.
+        Prepare data with random train-test split and scaling.
         
         Args:
             df: DataFrame with features and labels
             feature_cols: List of feature column names
             label_col: Name of label column
-            date_col: Name of date column for time-based split
             test_size: Proportion of data for testing
         
         Returns:
-            Tuple of (X_train, X_test, y_train, y_test, train_dates, test_dates)
+            Tuple of (X_train, X_test, y_train, y_test)
         """
         self._log("\n" + "="*80)
-        self._log("DATA PREPARATION")
+        self._log("DATA PREPARATION (Random Split)")
         self._log("="*80)
         
-        # Sort by date for time-based split
-        df = df.sort_values(date_col).reset_index(drop=True)
-        
-        # Calculate split index
-        split_idx = int(len(df) * (1 - test_size))
-        
-        # Split data
-        train_df = df.iloc[:split_idx].copy()
-        test_df = df.iloc[split_idx:].copy()
-        
         # Extract features and labels
-        X_train = train_df[feature_cols].values
-        y_train = train_df[label_col].values
-        X_test = test_df[feature_cols].values
-        y_test = test_df[label_col].values
+        X = df[feature_cols].values
+        y = df[label_col].values
         
-        train_dates = train_df[date_col]
-        test_dates = test_df[date_col]
+        # Random train/test split with stratification
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=test_size, random_state=self.random_state, stratify=y
+        )
         
         # Handle NaN/inf values
         X_train = np.nan_to_num(X_train, nan=0.0, posinf=0.0, neginf=0.0)
@@ -123,15 +117,15 @@ class ModelTrainer:
         X_test = self.scaler.transform(X_test)
         
         self._log(f"\nDataset split:")
-        self._log(f"  • Total samples: {len(df):,}")
-        self._log(f"  • Training samples: {len(train_df):,} ({len(train_df)/len(df)*100:.1f}%)")
-        self._log(f"  • Test samples: {len(test_df):,} ({len(test_df)/len(df)*100:.1f}%)")
+        self._log(f"  • Total samples: {len(X):,}")
+        self._log(f"  • Training samples: {len(X_train):,} ({len(X_train)/len(X)*100:.1f}%)")
+        self._log(f"  • Test samples: {len(X_test):,} ({len(X_test)/len(X)*100:.1f}%)")
         self._log(f"\nLabel distribution:")
         self._log(f"  • Training spam rate: {y_train.mean()*100:.2f}%")
         self._log(f"  • Test spam rate: {y_test.mean()*100:.2f}%")
         self._log(f"\n✓ Data prepared and scaled")
         
-        return X_train, X_test, y_train, y_test, train_dates, test_dates
+        return X_train, X_test, y_train, y_test
     
     # ============================================================================
     # MODEL EVALUATION
@@ -159,6 +153,12 @@ class ModelTrainer:
             Dictionary of metrics
         """
         y_pred = model.predict(X_test)
+        
+        # Store predictions for visualization
+        if is_baseline:
+            self.baseline_predictions[model_name] = y_pred
+        else:
+            self.tuned_predictions[model_name] = y_pred
         
         # Calculate metrics
         metrics = {
@@ -225,9 +225,9 @@ class ModelTrainer:
                 probability=True
             ),
             'K-Nearest Neighbors': KNeighborsClassifier(),
-            'Gradient Boosting': GradientBoostingClassifier(
-                random_state=self.random_state
-            )
+            # 'Gradient Boosting': GradientBoostingClassifier(
+            #     random_state=self.random_state
+            # )
         }
         
         # Add XGBoost if available
@@ -307,13 +307,13 @@ class ModelTrainer:
                 'min_samples_leaf': [1, 2, 4],
                 'max_features': ['sqrt', 'log2']
             },
-            'Gradient Boosting': {
-                'n_estimators': [50, 100, 200],
-                'learning_rate': [0.01, 0.05, 0.1, 0.2],
-                'max_depth': [3, 5, 7],
-                'min_samples_split': [2, 5, 10],
-                'subsample': [0.8, 0.9, 1.0]
-            },
+            # 'Gradient Boosting': {
+            #     'n_estimators': [50, 100, 200],
+            #     'learning_rate': [0.01, 0.05, 0.1, 0.2],
+            #     'max_depth': [3, 5, 7],
+            #     'min_samples_split': [2, 5, 10],
+            #     'subsample': [0.8, 0.9, 1.0]
+            # },
             'SVM': {
                 'C': [0.1, 1, 10, 100],
                 'gamma': ['scale', 'auto', 0.001, 0.01],
@@ -357,7 +357,7 @@ class ModelTrainer:
         cv_splits: int = 3
     ) -> pd.DataFrame:
         """
-        Tune hyperparameters using RandomizedSearchCV with time-based validation.
+        Tune hyperparameters using RandomizedSearchCV with random cross-validation.
         
         Args:
             X_train: Training features
@@ -366,7 +366,7 @@ class ModelTrainer:
             y_test: Test labels
             models_to_tune: List of model names to tune (None = tune all)
             n_iter: Number of random search iterations
-            cv_splits: Number of CV splits (use 3 for time-based split)
+            cv_splits: Number of CV splits (default: 3)
         
         Returns:
             DataFrame with tuned model results
@@ -374,9 +374,9 @@ class ModelTrainer:
         self._log("\n" + "="*80)
         self._log("HYPERPARAMETER TUNING (RANDOMIZED SEARCH)")
         self._log("="*80)
-        self._log(f"\n⚠️  Using {cv_splits}-fold CV with time-based splits")
-        self._log(f"   • Random search iterations: {n_iter}")
-        self._log(f"   • Scoring metric: F1-score")
+        self._log(f"\n  • Using {cv_splits}-fold random CV")
+        self._log(f"  • Random search iterations: {n_iter}")
+        self._log(f"  • Scoring metric: F1-score")
         
         if models_to_tune is None:
             models_to_tune = list(self.baseline_models.keys())
@@ -489,14 +489,14 @@ class ModelTrainer:
             Tuple of (metrics dict, predictions)
         """
         self._log("\n" + "="*80)
-        self._log("STACKING ENSEMBLE (RIDGE META-LEARNER)")
+        self._log("STACKING ENSEMBLE (LOGISTIC REGRESSION META-LEARNER)")
         self._log("="*80)
         
         models_dict = self.tuned_models if use_tuned else self.baseline_models
         model_type = "tuned" if use_tuned else "baseline"
         
         self._log(f"\n  • Using {model_type} models as base learners")
-        self._log(f"  • Meta-learner: Ridge Regression")
+        self._log(f"  • Meta-learner: Logistic Regression")
         self._log(f"  • Validation split: {val_split*100:.0f}% for meta-training")
         
         # Split training data for meta-learning (maintain temporal order)
@@ -533,8 +533,8 @@ class ModelTrainer:
         ])
         
         # Train meta-learner on validation predictions
-        self._log("  • Training Ridge meta-learner...")
-        meta_learner = Ridge(alpha=1.0, random_state=self.random_state)
+        self._log("  • Training Logistic Regression meta-learner...")
+        meta_learner = LogisticRegression(max_iter=1000, random_state=self.random_state)
         meta_learner.fit(meta_val_features, y_meta_val)
         
         # Show meta-learner coefficients
@@ -560,7 +560,7 @@ class ModelTrainer:
         
         # Evaluate
         metrics = {
-            'Model': 'Ridge Stacking',
+            'Model': 'Logistic Stacking',
             'Type': f'Ensemble ({model_type})',
             'Accuracy': accuracy_score(y_test, test_pred),
             'Precision': precision_score(y_test, test_pred, zero_division=0),
@@ -634,6 +634,218 @@ class ModelTrainer:
         """
         results_df.to_csv(PROCESSED_DATA_DIR / filename, index=False)
         self._log(f"\n💾 Results saved to: {PROCESSED_DATA_DIR / filename}")
+    
+    def save_models(
+        self,
+        models_dir: str = "models",
+        save_baseline: bool = False,
+        save_tuned: bool = True
+    ):
+        """
+        Save trained models to disk as pickle files.
+        
+        Args:
+            models_dir: Directory to save models (relative to project root)
+            save_baseline: Whether to save baseline models
+            save_tuned: Whether to save tuned models
+        """
+        import pickle
+        from pathlib import Path
+        
+        # Get project root (parent of dsa4263_group_project)
+        project_root = Path(__file__).parent.parent
+        models_path = project_root / models_dir
+        models_path.mkdir(parents=True, exist_ok=True)
+        
+        self._log("\n" + "="*80)
+        self._log("SAVING TRAINED MODELS")
+        self._log("="*80)
+        self._log(f"\n  • Save directory: {models_path}")
+        
+        saved_count = 0
+        
+        # Save baseline models
+        if save_baseline and self.baseline_models:
+            self._log("\n  • Saving baseline models...")
+            baseline_dir = models_path / "baseline"
+            baseline_dir.mkdir(parents=True, exist_ok=True)
+            
+            for model_name, model in self.baseline_models.items():
+                safe_name = model_name.lower().replace(' ', '_')
+                model_file = baseline_dir / f"{safe_name}_baseline.pkl"
+                with open(model_file, 'wb') as f:
+                    pickle.dump(model, f)
+                self._log(f"    ✓ {model_name}: {model_file.name}")
+                saved_count += 1
+        
+        # Save tuned models
+        if save_tuned and self.tuned_models:
+            self._log("\n  • Saving tuned models...")
+            tuned_dir = models_path / "tuned"
+            tuned_dir.mkdir(parents=True, exist_ok=True)
+            
+            for model_name, model in self.tuned_models.items():
+                safe_name = model_name.lower().replace(' ', '_')
+                model_file = tuned_dir / f"{safe_name}_tuned.pkl"
+                with open(model_file, 'wb') as f:
+                    pickle.dump(model, f)
+                self._log(f"    ✓ {model_name}: {model_file.name}")
+                saved_count += 1
+        
+        # Save scaler
+        scaler_file = models_path / "scaler.pkl"
+        with open(scaler_file, 'wb') as f:
+            pickle.dump(self.scaler, f)
+        self._log(f"\n  • Saved StandardScaler: {scaler_file.name}")
+        saved_count += 1
+        
+        self._log(f"\n💾 Total models saved: {saved_count}")
+        self._log(f"   Location: {models_path}")
+    
+    # ============================================================================
+    # VISUALIZATION
+    # ============================================================================
+    
+    def plot_confusion_matrices(
+        self,
+        y_test: np.ndarray,
+        ensemble_pred: Optional[np.ndarray] = None,
+        save_dir: str = "reports/figures"
+    ):
+        """
+        Plot confusion matrices for all models.
+        
+        Args:
+            y_test: True test labels
+            ensemble_pred: Ensemble predictions (optional)
+            save_dir: Directory to save plots
+        """
+        from pathlib import Path
+        
+        # Get project root
+        project_root = Path(__file__).parent.parent
+        save_path = project_root / save_dir
+        save_path.mkdir(parents=True, exist_ok=True)
+        
+        self._log("\n" + "="*80)
+        self._log("GENERATING CONFUSION MATRICES")
+        self._log("="*80)
+        
+        # Combine all predictions
+        all_predictions = {}
+        
+        # Add tuned models (prefer tuned over baseline)
+        for model_name, y_pred in self.tuned_predictions.items():
+            all_predictions[f"{model_name} (Tuned)"] = y_pred
+        
+        # Add baseline models that weren't tuned
+        for model_name, y_pred in self.baseline_predictions.items():
+            if model_name not in self.tuned_predictions:
+                all_predictions[f"{model_name} (Baseline)"] = y_pred
+        
+        # Add ensemble if provided
+        if ensemble_pred is not None:
+            all_predictions["Logistic Stacking (Ensemble)"] = ensemble_pred
+        
+        # Calculate grid size
+        n_models = len(all_predictions)
+        n_cols = 3
+        n_rows = (n_models + n_cols - 1) // n_cols
+        
+        # Create figure
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(15, 5*n_rows))
+        axes = axes.flatten() if n_models > 1 else [axes]
+        
+        for idx, (model_name, y_pred) in enumerate(all_predictions.items()):
+            ax = axes[idx]
+            
+            # Compute confusion matrix
+            cm = confusion_matrix(y_test, y_pred)
+            
+            # Plot
+            sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=ax,
+                       cbar=True, square=True)
+            ax.set_title(f'{model_name}', fontsize=12, fontweight='bold')
+            ax.set_xlabel('Predicted Label', fontsize=10)
+            ax.set_ylabel('True Label', fontsize=10)
+            ax.set_xticklabels(['Ham', 'Spam'])
+            ax.set_yticklabels(['Ham', 'Spam'])
+        
+        # Hide extra subplots
+        for idx in range(n_models, len(axes)):
+            axes[idx].axis('off')
+        
+        plt.tight_layout()
+        
+        # Save figure
+        fig_path = save_path / "confusion_matrices.png"
+        plt.savefig(fig_path, dpi=300, bbox_inches='tight')
+        self._log(f"\n💾 Confusion matrices saved to: {fig_path}")
+        
+        plt.close()
+    
+    def plot_metrics_comparison(
+        self,
+        results_df: pd.DataFrame,
+        save_dir: str = "reports/figures"
+    ):
+        """
+        Plot grouped bar chart comparing metrics across models.
+        
+        Args:
+            results_df: DataFrame with model results
+            save_dir: Directory to save plots
+        """
+        from pathlib import Path
+        
+        # Get project root
+        project_root = Path(__file__).parent.parent
+        save_path = project_root / save_dir
+        save_path.mkdir(parents=True, exist_ok=True)
+        
+        self._log("\n" + "="*80)
+        self._log("GENERATING METRICS COMPARISON CHART")
+        self._log("="*80)
+        
+        # Prepare data
+        metrics_to_plot = ['F1-Score', 'Precision', 'Recall', 'Accuracy']
+        plot_data = results_df[['Model', 'Type'] + metrics_to_plot].copy()
+        
+        # Create model labels with type
+        plot_data['Model_Label'] = plot_data['Model'] + ' (' + plot_data['Type'] + ')'
+        
+        # Set up the plot
+        fig, ax = plt.subplots(figsize=(14, 8))
+        
+        # Prepare data for grouped bar chart
+        x = np.arange(len(plot_data))
+        width = 0.2
+        
+        # Plot each metric
+        colors = ['#3498db', '#e74c3c', '#2ecc71', '#f39c12']
+        for i, metric in enumerate(metrics_to_plot):
+            offset = width * (i - 1.5)
+            ax.bar(x + offset, plot_data[metric], width, 
+                   label=metric, color=colors[i], alpha=0.8)
+        
+        # Customize plot
+        ax.set_xlabel('Model', fontsize=12, fontweight='bold')
+        ax.set_ylabel('Score', fontsize=12, fontweight='bold')
+        ax.set_title('Model Performance Comparison', fontsize=14, fontweight='bold')
+        ax.set_xticks(x)
+        ax.set_xticklabels(plot_data['Model_Label'], rotation=45, ha='right')
+        ax.legend(loc='lower right', fontsize=10)
+        ax.set_ylim(0, 1.0)
+        ax.grid(axis='y', alpha=0.3, linestyle='--')
+        
+        plt.tight_layout()
+        
+        # Save figure
+        fig_path = save_path / "metrics_comparison.png"
+        plt.savefig(fig_path, dpi=300, bbox_inches='tight')
+        self._log(f"\n💾 Metrics comparison saved to: {fig_path}")
+        
+        plt.close()
 
 
 # ============================================================================
@@ -673,7 +885,7 @@ if __name__ == '__main__':
             # Initialize trainer
             trainer = ModelTrainer(verbose=True, random_state=42)
             # Prepare data
-            X_train, X_test, y_train, y_test, _, _ = trainer.prepare_data(
+            X_train, X_test, y_train, y_test = trainer.prepare_data(
                 df, feature_cols, test_size=0.2
             )
             # Train baseline models
@@ -698,6 +910,14 @@ if __name__ == '__main__':
             )
             # Save results
             trainer.save_results(final_df)
+            
+            # Save trained models
+            trainer.save_models(
+                models_dir="models",
+                save_baseline=False,
+                save_tuned=True
+            )
+            
             print("\n✅ Model training demo complete!")
     except FileNotFoundError:
         print("\n⚠️  Feature file not found. Please run feature engineering first.")

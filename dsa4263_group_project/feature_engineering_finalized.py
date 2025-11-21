@@ -6,11 +6,58 @@ from tqdm import tqdm
 import warnings
 from dsa4263_group_project.config import PROCESSED_DATA_DIR, RAW_DATA_DIR
 from typing import Optional, Tuple
+from multiprocessing import Pool, cpu_count
 
 warnings.filterwarnings('ignore')
 
 
 class FeatureEngineer:
+	# ==========================================================================
+	# MULTIPROCESSING WRAPPER FUNCTIONS (STATIC METHODS)
+	# ==========================================================================
+
+	@staticmethod
+	def compute_graph_features_parallel(df: pd.DataFrame) -> Tuple[pd.DataFrame, str]:
+		"""
+		Wrapper function for parallel execution of graph feature engineering.
+		"""
+		engineer = FeatureEngineer(verbose=True)
+		df_features = engineer.compute_graph_features(df)
+		return df_features
+
+	@staticmethod
+	def compute_timeseries_features_parallel(df: pd.DataFrame) -> Tuple[pd.DataFrame, str]:
+		"""
+		Wrapper function for parallel execution of time series feature engineering.
+		"""
+		engineer = FeatureEngineer(verbose=True)
+		df_features = engineer.compute_timeseries_features(df)
+		return df_features
+
+	@staticmethod
+	def compute_text_features_parallel(df: pd.DataFrame) -> Tuple[pd.DataFrame, str]:
+		"""
+		Wrapper function for parallel execution of text feature engineering.
+		"""
+		engineer = FeatureEngineer(verbose=True)
+		df_features = engineer.compute_text_features(df)
+		return df_features
+
+	@staticmethod
+	def _process_chunk(chunk):
+		engineer = FeatureEngineer(verbose=False)
+		return engineer.compute_text_features(chunk)
+
+	@staticmethod
+	def compute_text_features_parallel_df(df, n_chunks=None):
+		import numpy as np
+		from multiprocessing import Pool, cpu_count
+		if n_chunks is None:
+			n_chunks = max(2, min(cpu_count(), 8))
+		chunks = np.array_split(df, n_chunks)
+		with Pool(n_chunks) as pool:
+			results = pool.map(FeatureEngineer._process_chunk, chunks)
+		return pd.concat(results, ignore_index=True)
 	"""
 	Template for email feature engineering.
 	Includes:
@@ -83,7 +130,10 @@ class FeatureEngineer:
 			'in_degree': 0,
 			'total_degree': 0,
 			'reciprocity': 0.0,
-			'avg_weight': 0.0
+			'avg_weight': 0.0,
+			'clustering': 0.0,
+			'eigenvector': 0.0,
+			'closeness': 0.0
 		}
 		
 		if node not in G:
@@ -96,15 +146,40 @@ class FeatureEngineer:
 		features['in_degree'] = in_deg
 		features['total_degree'] = out_deg + in_deg
 		
-		# Compute reciprocity (what % of my outgoing edges have incoming edges)
+		# Compute reciprocity: How many recipients have mutual connections?
+		# (following feature_extraction.py formula)
 		receivers = list(G.successors(node))
 		if receivers:
-			reciprocal_count = sum([1 for r in receivers if G.has_edge(r, node)])
+			reciprocal_count = sum(1 for r in receivers if G.has_edge(r, node))
 			features['reciprocity'] = reciprocal_count / len(receivers)
 			
 			# Average weight of outgoing edges
 			weights = [G[node][r]['weight'] for r in receivers]
 			features['avg_weight'] = np.mean(weights)
+		
+		# Compute clustering coefficient (only if node has degree > 0)
+		if G.number_of_nodes() > 1:
+			try:
+				G_undirected = G.to_undirected()
+				features['clustering'] = nx.clustering(G_undirected, node)
+			except:
+				features['clustering'] = 0.0
+		
+		# Compute closeness centrality
+		if G.number_of_nodes() > 1:
+			try:
+				closeness = nx.closeness_centrality(G)
+				features['closeness'] = closeness.get(node, 0.0)
+			except:
+				features['closeness'] = 0.0
+		
+		# Compute eigenvector centrality
+		if G.number_of_nodes() > 1:
+			try:
+				eigenvector = nx.eigenvector_centrality(G, max_iter=100)
+				features['eigenvector'] = eigenvector.get(node, 0.0)
+			except:
+				features['eigenvector'] = 0.0
 		
 		return features
 	
@@ -174,7 +249,10 @@ class FeatureEngineer:
 			'sender_in_degree',
 			'sender_total_degree',
 			'sender_reciprocity',
-			'sender_avg_weight'
+			'sender_avg_weight',
+			'sender_clustering',
+			'sender_eigenvector',
+			'sender_closeness'
 		]
 		
 		for col in graph_feature_cols:
@@ -195,6 +273,9 @@ class FeatureEngineer:
 			df.loc[idx, 'sender_total_degree'] = features['total_degree']
 			df.loc[idx, 'sender_reciprocity'] = features['reciprocity']
 			df.loc[idx, 'sender_avg_weight'] = features['avg_weight']
+			df.loc[idx, 'sender_clustering'] = features['clustering']
+			df.loc[idx, 'sender_eigenvector'] = features['eigenvector']
+			df.loc[idx, 'sender_closeness'] = features['closeness']
 			
 			# Add current edge to graph for future iterations
 			if G.has_edge(current_sender, current_receiver):
@@ -206,6 +287,9 @@ class FeatureEngineer:
 		df = self._compute_sender_history(df)
 		
 		self._log(f"✅ Graph features computed: {len(graph_feature_cols) + 4} features")
+		self._log(f"   Basic: out_degree, in_degree, total_degree, reciprocity, avg_weight")
+		self._log(f"   Centrality: clustering, eigenvector, closeness")
+		self._log(f"   Historical: email_count, spam_count, spam_rate, time_since_last_email")
 		
 		return df
 	
@@ -629,118 +713,338 @@ class FeatureEngineer:
 		"""
 		df.to_csv(PROCESSED_DATA_DIR / output_path, index=False)
 		self._log(f"💾 Features saved to: {output_path}")
-
-
-# ============================================================================
-# MULTIPROCESSING WRAPPER FUNCTIONS
-# ============================================================================
-
-def compute_graph_features_parallel(df: pd.DataFrame) -> Tuple[pd.DataFrame, str]:
-	"""
-	Wrapper function for parallel execution of graph feature engineering.
 	
-	Args:
-		df: Input DataFrame
+	# ============================================================================
+	# ABLATION STUDY METHODS
+	# ============================================================================
 	
-	Returns:
-		Tuple of (DataFrame with features, feature type name)
-	"""
-	engineer = FeatureEngineer(verbose=True)
-	df_features = engineer.compute_graph_features(df)
-	return df_features, "graph"
-
-
-def compute_timeseries_features_parallel(df: pd.DataFrame) -> Tuple[pd.DataFrame, str]:
-	"""
-	Wrapper function for parallel execution of time series feature engineering.
+	def select_best_feature_group(
+		self, 
+		ablation_results: pd.DataFrame, 
+		feature_groups: dict,
+		metric: str = 'F1-Score'
+	) -> Tuple[str, list, pd.Series]:
+		"""
+		Automatically select the best feature group based on a specified metric.
+		
+		Args:
+			ablation_results: DataFrame returned by ablation study methods
+			feature_groups: Dictionary mapping group names to feature lists
+			metric: Metric to use for selection (default: 'F1-Score')
+		
+		Returns:
+			Tuple of (best group name, feature list, metrics row)
+		"""
+		if metric not in ablation_results.columns:
+			raise ValueError(f"Metric '{metric}' not found in results. Available: {ablation_results.columns.tolist()}")
+		
+		best_idx = ablation_results[metric].idxmax()
+		best_row = ablation_results.iloc[best_idx]
+		best_group = best_row['Feature Group']
+		best_features = feature_groups[best_group]
+		
+		self._log(f"\n🏆 BEST FEATURE GROUP SELECTED")
+		self._log(f"   Group: {best_group}")
+		self._log(f"   Num Features: {len(best_features)}")
+		self._log(f"   {metric}: {best_row[metric]:.4f}")
+		self._log(f"   Accuracy: {best_row['Accuracy']:.4f}")
+		self._log(f"   Precision: {best_row['Precision']:.4f}")
+		self._log(f"   Recall: {best_row['Recall']:.4f}")
+		
+		return best_group, best_features, best_row
 	
-	Args:
-		df: Input DataFrame
+	def graph_feature_ablation_study(self, df: pd.DataFrame, label_col: str = 'label') -> pd.DataFrame:
+		"""
+		Ablation study for graph features using logistic regression.
+		
+		Args:
+			df: DataFrame with graph features computed
+			label_col: Name of label column
+		
+		Returns:
+			DataFrame with metrics for each feature group
+		"""
+		from sklearn.linear_model import LogisticRegression
+		from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+		from sklearn.model_selection import train_test_split
+		from sklearn.preprocessing import StandardScaler
+		
+		self._log("\n" + "="*80)
+		self._log("GRAPH FEATURE ABLATION STUDY")
+		self._log("="*80)
+		
+		# Define feature groups
+		feature_groups = {
+			'Basic': [
+				'sender_out_degree', 'sender_in_degree', 
+				'sender_total_degree', 'sender_reciprocity'
+			],
+			'Basic + Advanced': [
+				'sender_out_degree', 'sender_in_degree', 
+				'sender_total_degree', 'sender_reciprocity',
+				'sender_clustering', 'sender_eigenvector', 
+				'sender_closeness', 'sender_avg_weight'
+			],
+			'Basic + Historical': [
+				'sender_out_degree', 'sender_in_degree', 
+				'sender_total_degree', 'sender_reciprocity',
+				'sender_historical_email_count', 'sender_historical_spam_count',
+				'sender_historical_spam_rate', 'sender_time_since_last_email'
+			],
+			'All': [
+				'sender_out_degree', 'sender_in_degree', 
+				'sender_total_degree', 'sender_reciprocity', 'sender_avg_weight',
+				'sender_clustering', 'sender_eigenvector', 'sender_closeness',
+				'sender_historical_email_count', 'sender_historical_spam_count',
+				'sender_historical_spam_rate', 'sender_time_since_last_email'
+			]
+		}
+		
+		results = []
+		y = df[label_col]
+		
+		# Store feature_groups as instance variable for use with select_best_feature_group
+		self._graph_feature_groups = feature_groups
+		
+		for name, features in feature_groups.items():
+			# Check if all features exist
+			missing_features = [f for f in features if f not in df.columns]
+			if missing_features:
+				self._log(f"⚠️  Skipping '{name}': missing features {missing_features}")
+				continue
+			
+			self._log(f"\n[{name}] Testing {len(features)} features...")
+			X = df[features]
+			X_train, X_test, y_train, y_test = train_test_split(
+				X, y, test_size=0.2, random_state=42, stratify=y
+			)
+			
+			# Scale features
+			from sklearn.preprocessing import StandardScaler
+			scaler = StandardScaler()
+			X_train_scaled = scaler.fit_transform(X_train)
+			X_test_scaled = scaler.transform(X_test)
+			
+			model = LogisticRegression(max_iter=1000, solver='saga', random_state=42)
+			model.fit(X_train_scaled, y_train)
+			y_pred = model.predict(X_test_scaled)
+			
+			metrics = {
+				'Feature Group': name,
+				'Num Features': len(features),
+				'Accuracy': accuracy_score(y_test, y_pred),
+				'Precision': precision_score(y_test, y_pred),
+				'Recall': recall_score(y_test, y_pred),
+				'F1-Score': f1_score(y_test, y_pred)
+			}
+			results.append(metrics)
+			
+			self._log(f"  Accuracy:  {metrics['Accuracy']:.4f}")
+			self._log(f"  Precision: {metrics['Precision']:.4f}")
+			self._log(f"  Recall:    {metrics['Recall']:.4f}")
+			self._log(f"  F1-Score:  {metrics['F1-Score']:.4f}")
+		
+		results_df = pd.DataFrame(results)
+		self._log("\n✅ Graph feature ablation study complete!")
+		return results_df
 	
-	Returns:
-		Tuple of (DataFrame with features, feature type name)
-	"""
-	engineer = FeatureEngineer(verbose=True)
-	df_features = engineer.compute_timeseries_features(df)
-	return df_features, "timeseries"
-
-
-def compute_text_features_parallel(df: pd.DataFrame) -> Tuple[pd.DataFrame, str]:
-	"""
-	Wrapper function for parallel execution of text feature engineering.
+	def timeseries_feature_ablation_study(self, df: pd.DataFrame, label_col: str = 'label') -> pd.DataFrame:
+		"""
+		Ablation study for time series features using logistic regression.
+		
+		Args:
+			df: DataFrame with time series features computed
+			label_col: Name of label column
+		
+		Returns:
+			DataFrame with metrics for each feature group
+		"""
+		from sklearn.linear_model import LogisticRegression
+		from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+		from sklearn.model_selection import train_test_split
+		from sklearn.preprocessing import StandardScaler
+		
+		self._log("\n" + "="*80)
+		self._log("TIME SERIES FEATURE ABLATION STUDY")
+		self._log("="*80)
+		
+		# Define feature groups
+		feature_groups = {
+			'Geographic': ['hour', 'day_of_week', 'is_weekend', 'is_night'],
+			'Geographic + Behavioral': [
+				'hour', 'day_of_week', 'is_weekend', 'is_night', 'is_middle_east'
+			],
+			'Geographic + Risk Scores': [
+				'hour', 'day_of_week', 'is_weekend', 'is_night',
+				'hour_risk_score', 'weekday_risk_score'
+			],
+			'Geographic + Sender History': [
+				'hour', 'day_of_week', 'is_weekend', 'is_night',
+				'sender_historical_count', 'sender_historical_phishing_rate'
+			],
+			'Geographic + Temporal Burst': [
+				'hour', 'day_of_week', 'is_weekend', 'is_night',
+				'sender_time_gap', 'sender_time_gap_std'
+			],
+			'All': [
+				'hour', 'day_of_week', 'is_weekend', 'is_night', 'is_middle_east',
+				'hour_risk_score', 'weekday_risk_score', 'region_risk_score', 'region_hour_risk',
+				'sender_historical_count', 'sender_historical_spam_count', 
+				'sender_historical_phishing_rate', 'sender_time_gap', 
+				'sender_time_gap_std', 'sender_lifespan_days'
+			]
+		}
+		
+		results = []
+		y = df[label_col]
+		
+		# Store feature_groups as instance variable for use with select_best_feature_group
+		self._timeseries_feature_groups = feature_groups
+		
+		for name, features in feature_groups.items():
+			# Check if all features exist
+			missing_features = [f for f in features if f not in df.columns]
+			if missing_features:
+				self._log(f"⚠️  Skipping '{name}': missing features {missing_features}")
+				continue
+			
+			self._log(f"\n[{name}] Testing {len(features)} features...")
+			X = df[features]
+			X_train, X_test, y_train, y_test = train_test_split(
+				X, y, test_size=0.2, random_state=42, stratify=y
+			)
+			
+			# Scale features
+			scaler = StandardScaler()
+			X_train_scaled = scaler.fit_transform(X_train)
+			X_test_scaled = scaler.transform(X_test)
+			
+			model = LogisticRegression(max_iter=1000, solver='saga', random_state=42)
+			model.fit(X_train_scaled, y_train)
+			y_pred = model.predict(X_test_scaled)
+			
+			metrics = {
+				'Feature Group': name,
+				'Num Features': len(features),
+				'Accuracy': accuracy_score(y_test, y_pred),
+				'Precision': precision_score(y_test, y_pred),
+				'Recall': recall_score(y_test, y_pred),
+				'F1-Score': f1_score(y_test, y_pred)
+			}
+			results.append(metrics)
+			
+			self._log(f"  Accuracy:  {metrics['Accuracy']:.4f}")
+			self._log(f"  Precision: {metrics['Precision']:.4f}")
+			self._log(f"  Recall:    {metrics['Recall']:.4f}")
+			self._log(f"  F1-Score:  {metrics['F1-Score']:.4f}")
+		
+		results_df = pd.DataFrame(results)
+		self._log("\n✅ Time series feature ablation study complete!")
+		return results_df
 	
-	Args:
-		df: Input DataFrame
-	
-	Returns:
-		Tuple of (DataFrame with features, feature type name)
-	"""
-	engineer = FeatureEngineer(verbose=True)
-	df_features = engineer.compute_text_features(df)
-	return df_features, "text"
-
-
-# ============================================================================
-# EXAMPLE USAGE
-# ============================================================================
-
-if __name__ == '__main__':
-	import time
-	from multiprocessing import Pool
-	
-	print("\n" + "="*80)
-	print("FEATURE ENGINEERING PIPELINE DEMO")
-	print("="*80)
-	
-	# Example: Sequential execution
-	print("\n📌 SEQUENTIAL EXECUTION")
-	print("-" * 80)
-	
-	# Load your data
-	df = pd.read_csv(PROCESSED_DATA_DIR / "cleaned_date_merge.csv")
-	df['date'] = pd.to_datetime(df['date'], errors='coerce')
-	df = df.dropna(subset=['sender', 'receiver', 'date', 'label'])
-	df = df.sort_values('date').reset_index(drop=True)
-	
-	engineer = FeatureEngineer(verbose=True)
-	
-	# Compute features sequentially
-	start = time.time()
-	df_graph = engineer.compute_graph_features(df.copy())
-	df_ts = engineer.compute_timeseries_features(df.copy())
-	df_text = engineer.compute_text_features(df.copy())
-	elapsed_sequential = time.time() - start
-	
-	print(f"\n⏱️  Sequential time: {elapsed_sequential:.2f} seconds")
-	
-	# Example: Parallel execution
-	print("\n" + "="*80)
-	print("📌 PARALLEL EXECUTION (3 processes)")
-	print("-" * 80)
-	
-	start = time.time()
-	
-	with Pool(processes=3) as pool:
-		results = [
-			pool.apply_async(compute_graph_features_parallel, (df.copy(),)),
-			pool.apply_async(compute_timeseries_features_parallel, (df.copy(),)),
-			pool.apply_async(compute_text_features_parallel, (df.copy(),))
-		]
-		results = [r.get() for r in results]
-	
-	elapsed_parallel = time.time() - start
-	
-	# Extract results
-	df_graph_parallel = results[0][0]
-	df_ts_parallel = results[1][0]
-	df_text_parallel = results[2][0]
-	
-	print(f"\n⏱️  Parallel time: {elapsed_parallel:.2f} seconds")
-	print(f"🚀 Speedup: {elapsed_sequential/elapsed_parallel:.2f}x")
-	
-	# Save features
-	engineer.save_features(df_graph_parallel, "graph_features_pit.csv")
-	engineer.save_features(df_ts_parallel, "timeseries_features_pit.csv")
-	engineer.save_features(df_text_parallel, "text_features_pit.csv")
-	
-	print("\n✅ Feature engineering complete!")
+	def text_feature_ablation_study(self, df: pd.DataFrame, label_col: str = 'label') -> pd.DataFrame:
+		"""
+		Ablation study for text features using logistic regression.
+		
+		Args:
+			df: DataFrame with text features computed
+			label_col: Name of label column
+		
+		Returns:
+			DataFrame with metrics for each feature group
+		"""
+		from sklearn.linear_model import LogisticRegression
+		from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+		from sklearn.model_selection import train_test_split
+		from sklearn.preprocessing import StandardScaler
+		
+		self._log("\n" + "="*80)
+		self._log("TEXT FEATURE ABLATION STUDY")
+		self._log("="*80)
+		
+		# Define feature groups
+		feature_groups = {
+			'URL Features': ['urls', 'has_url', 'urls_log'],
+			'URL + Domain Features': [
+				'urls', 'has_url', 'urls_log',
+				'domain_spam_rate', 'is_suspicious_domain', 
+				'domain_frequency', 'is_rare_domain'
+			],
+			'URL + Domain + Text Length Features': [
+				'urls', 'has_url', 'urls_log',
+				'domain_spam_rate', 'is_suspicious_domain', 
+				'domain_frequency', 'is_rare_domain',
+				'subject_length', 'body_length', 'text_length', 'word_count'
+			],
+			'URL + Domain + Text Length + Character Features': [
+				'urls', 'has_url', 'urls_log',
+				'domain_spam_rate', 'is_suspicious_domain', 
+				'domain_frequency', 'is_rare_domain',
+				'subject_length', 'body_length', 'text_length', 'word_count',
+				'uppercase_ratio', 'exclamation_count', 'dollar_count'
+			],
+			'URL + Domain + Text Length + Character + Style Features': [
+				'urls', 'has_url', 'urls_log',
+				'domain_spam_rate', 'is_suspicious_domain', 
+				'domain_frequency', 'is_rare_domain',
+				'subject_length', 'body_length', 'text_length', 'word_count',
+				'uppercase_ratio', 'exclamation_count', 'dollar_count',
+				'special_char_total', 'digit_ratio', 'avg_word_length'
+			],
+			'URL + Domain + Text Length + Character + Style + Sentiment Features': [
+				'urls', 'has_url', 'urls_log',
+				'domain_spam_rate', 'is_suspicious_domain', 
+				'domain_frequency', 'is_rare_domain',
+				'subject_length', 'body_length', 'text_length', 'word_count',
+				'uppercase_ratio', 'exclamation_count', 'dollar_count',
+				'special_char_total', 'digit_ratio', 'avg_word_length',
+				'subject_sentiment', 'body_sentiment'
+			]
+		}
+		
+		results = []
+		y = df[label_col]
+		
+		# Store feature_groups as instance variable for use with select_best_feature_group
+		self._text_feature_groups = feature_groups
+		
+		for name, features in feature_groups.items():
+			# Check if all features exist
+			missing_features = [f for f in features if f not in df.columns]
+			if missing_features:
+				self._log(f"⚠️  Skipping '{name}': missing features {missing_features}")
+				continue
+			
+			self._log(f"\n[{name}] Testing {len(features)} features...")
+			X = df[features]
+			X_train, X_test, y_train, y_test = train_test_split(
+				X, y, test_size=0.2, random_state=42, stratify=y
+			)
+			
+			# Scale features
+			scaler = StandardScaler()
+			X_train_scaled = scaler.fit_transform(X_train)
+			X_test_scaled = scaler.transform(X_test)
+			
+			model = LogisticRegression(max_iter=1000, solver='saga', random_state=42)
+			model.fit(X_train_scaled, y_train)
+			y_pred = model.predict(X_test_scaled)
+			
+			metrics = {
+				'Feature Group': name,
+				'Num Features': len(features),
+				'Accuracy': accuracy_score(y_test, y_pred),
+				'Precision': precision_score(y_test, y_pred),
+				'Recall': recall_score(y_test, y_pred),
+				'F1-Score': f1_score(y_test, y_pred)
+			}
+			results.append(metrics)
+			
+			self._log(f"  Accuracy:  {metrics['Accuracy']:.4f}")
+			self._log(f"  Precision: {metrics['Precision']:.4f}")
+			self._log(f"  Recall:    {metrics['Recall']:.4f}")
+			self._log(f"  F1-Score:  {metrics['F1-Score']:.4f}")
+		
+		results_df = pd.DataFrame(results)
+		self._log("\n✅ Text feature ablation study complete!")
+		return results_df
