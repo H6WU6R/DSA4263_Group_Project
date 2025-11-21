@@ -6,11 +6,58 @@ from tqdm import tqdm
 import warnings
 from dsa4263_group_project.config import PROCESSED_DATA_DIR, RAW_DATA_DIR
 from typing import Optional, Tuple
+from multiprocessing import Pool, cpu_count
 
 warnings.filterwarnings('ignore')
 
 
 class FeatureEngineer:
+	# ==========================================================================
+	# MULTIPROCESSING WRAPPER FUNCTIONS (STATIC METHODS)
+	# ==========================================================================
+
+	@staticmethod
+	def compute_graph_features_parallel(df: pd.DataFrame) -> Tuple[pd.DataFrame, str]:
+		"""
+		Wrapper function for parallel execution of graph feature engineering.
+		"""
+		engineer = FeatureEngineer(verbose=True)
+		df_features = engineer.compute_graph_features(df)
+		return df_features
+
+	@staticmethod
+	def compute_timeseries_features_parallel(df: pd.DataFrame) -> Tuple[pd.DataFrame, str]:
+		"""
+		Wrapper function for parallel execution of time series feature engineering.
+		"""
+		engineer = FeatureEngineer(verbose=True)
+		df_features = engineer.compute_timeseries_features(df)
+		return df_features
+
+	@staticmethod
+	def compute_text_features_parallel(df: pd.DataFrame) -> Tuple[pd.DataFrame, str]:
+		"""
+		Wrapper function for parallel execution of text feature engineering.
+		"""
+		engineer = FeatureEngineer(verbose=True)
+		df_features = engineer.compute_text_features(df)
+		return df_features
+
+	@staticmethod
+	def _process_chunk(chunk):
+		engineer = FeatureEngineer(verbose=False)
+		return engineer.compute_text_features(chunk)
+
+	@staticmethod
+	def compute_text_features_parallel_df(df, n_chunks=None):
+		import numpy as np
+		from multiprocessing import Pool, cpu_count
+		if n_chunks is None:
+			n_chunks = max(2, min(cpu_count(), 8))
+		chunks = np.array_split(df, n_chunks)
+		with Pool(n_chunks) as pool:
+			results = pool.map(FeatureEngineer._process_chunk, chunks)
+		return pd.concat(results, ignore_index=True)
 	"""
 	Template for email feature engineering.
 	Includes:
@@ -720,6 +767,7 @@ class FeatureEngineer:
 		from sklearn.linear_model import LogisticRegression
 		from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 		from sklearn.model_selection import train_test_split
+		from sklearn.preprocessing import StandardScaler
 		
 		self._log("\n" + "="*80)
 		self._log("GRAPH FEATURE ABLATION STUDY")
@@ -771,9 +819,15 @@ class FeatureEngineer:
 				X, y, test_size=0.2, random_state=42, stratify=y
 			)
 			
+			# Scale features
+			from sklearn.preprocessing import StandardScaler
+			scaler = StandardScaler()
+			X_train_scaled = scaler.fit_transform(X_train)
+			X_test_scaled = scaler.transform(X_test)
+			
 			model = LogisticRegression(max_iter=1000, solver='saga', random_state=42)
-			model.fit(X_train, y_train)
-			y_pred = model.predict(X_test)
+			model.fit(X_train_scaled, y_train)
+			y_pred = model.predict(X_test_scaled)
 			
 			metrics = {
 				'Feature Group': name,
@@ -808,6 +862,7 @@ class FeatureEngineer:
 		from sklearn.linear_model import LogisticRegression
 		from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 		from sklearn.model_selection import train_test_split
+		from sklearn.preprocessing import StandardScaler
 		
 		self._log("\n" + "="*80)
 		self._log("TIME SERIES FEATURE ABLATION STUDY")
@@ -859,9 +914,14 @@ class FeatureEngineer:
 				X, y, test_size=0.2, random_state=42, stratify=y
 			)
 			
+			# Scale features
+			scaler = StandardScaler()
+			X_train_scaled = scaler.fit_transform(X_train)
+			X_test_scaled = scaler.transform(X_test)
+			
 			model = LogisticRegression(max_iter=1000, solver='saga', random_state=42)
-			model.fit(X_train, y_train)
-			y_pred = model.predict(X_test)
+			model.fit(X_train_scaled, y_train)
+			y_pred = model.predict(X_test_scaled)
 			
 			metrics = {
 				'Feature Group': name,
@@ -896,6 +956,7 @@ class FeatureEngineer:
 		from sklearn.linear_model import LogisticRegression
 		from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 		from sklearn.model_selection import train_test_split
+		from sklearn.preprocessing import StandardScaler
 		
 		self._log("\n" + "="*80)
 		self._log("TEXT FEATURE ABLATION STUDY")
@@ -904,22 +965,33 @@ class FeatureEngineer:
 		# Define feature groups
 		feature_groups = {
 			'URL Features': ['urls', 'has_url', 'urls_log'],
-			'Domain Features': [
+			'URL + Domain Features': [
+				'urls', 'has_url', 'urls_log',
 				'domain_spam_rate', 'is_suspicious_domain', 
 				'domain_frequency', 'is_rare_domain'
 			],
-			'Text Length Features': [
+			'URL + Domain + Text Length Features': [
+				'urls', 'has_url', 'urls_log',
+				'domain_spam_rate', 'is_suspicious_domain', 
+				'domain_frequency', 'is_rare_domain',
 				'subject_length', 'body_length', 'text_length', 'word_count'
 			],
-			'Text Character Features': [
+			'URL + Domain + Text Length + Character Features': [
+				'urls', 'has_url', 'urls_log',
+				'domain_spam_rate', 'is_suspicious_domain', 
+				'domain_frequency', 'is_rare_domain',
+				'subject_length', 'body_length', 'text_length', 'word_count',
 				'uppercase_ratio', 'exclamation_count', 'dollar_count'
 			],
-			'Text Style Features': [
+			'URL + Domain + Text Length + Character + Style Features': [
+				'urls', 'has_url', 'urls_log',
+				'domain_spam_rate', 'is_suspicious_domain', 
+				'domain_frequency', 'is_rare_domain',
+				'subject_length', 'body_length', 'text_length', 'word_count',
 				'uppercase_ratio', 'exclamation_count', 'dollar_count',
 				'special_char_total', 'digit_ratio', 'avg_word_length'
 			],
-			'Sentiment Features': ['subject_sentiment', 'body_sentiment'],
-			'All Meta Features': [
+			'URL + Domain + Text Length + Character + Style + Sentiment Features': [
 				'urls', 'has_url', 'urls_log',
 				'domain_spam_rate', 'is_suspicious_domain', 
 				'domain_frequency', 'is_rare_domain',
@@ -949,9 +1021,14 @@ class FeatureEngineer:
 				X, y, test_size=0.2, random_state=42, stratify=y
 			)
 			
+			# Scale features
+			scaler = StandardScaler()
+			X_train_scaled = scaler.fit_transform(X_train)
+			X_test_scaled = scaler.transform(X_test)
+			
 			model = LogisticRegression(max_iter=1000, solver='saga', random_state=42)
-			model.fit(X_train, y_train)
-			y_pred = model.predict(X_test)
+			model.fit(X_train_scaled, y_train)
+			y_pred = model.predict(X_test_scaled)
 			
 			metrics = {
 				'Feature Group': name,
@@ -971,118 +1048,3 @@ class FeatureEngineer:
 		results_df = pd.DataFrame(results)
 		self._log("\n✅ Text feature ablation study complete!")
 		return results_df
-
-
-# ============================================================================
-# MULTIPROCESSING WRAPPER FUNCTIONS
-# ============================================================================
-
-def compute_graph_features_parallel(df: pd.DataFrame) -> Tuple[pd.DataFrame, str]:
-	"""
-	Wrapper function for parallel execution of graph feature engineering.
-	
-	Args:
-		df: Input DataFrame
-	
-	Returns:
-		Tuple of (DataFrame with features, feature type name)
-	"""
-	engineer = FeatureEngineer(verbose=True)
-	df_features = engineer.compute_graph_features(df)
-	return df_features, "graph"
-
-
-def compute_timeseries_features_parallel(df: pd.DataFrame) -> Tuple[pd.DataFrame, str]:
-	"""
-	Wrapper function for parallel execution of time series feature engineering.
-	
-	Args:
-		df: Input DataFrame
-	
-	Returns:
-		Tuple of (DataFrame with features, feature type name)
-	"""
-	engineer = FeatureEngineer(verbose=True)
-	df_features = engineer.compute_timeseries_features(df)
-	return df_features, "timeseries"
-
-
-def compute_text_features_parallel(df: pd.DataFrame) -> Tuple[pd.DataFrame, str]:
-	"""
-	Wrapper function for parallel execution of text feature engineering.
-	
-	Args:
-		df: Input DataFrame
-	
-	Returns:
-		Tuple of (DataFrame with features, feature type name)
-	"""
-	engineer = FeatureEngineer(verbose=True)
-	df_features = engineer.compute_text_features(df)
-	return df_features, "text"
-
-
-# ============================================================================
-# EXAMPLE USAGE
-# ============================================================================
-
-if __name__ == '__main__':
-	import time
-	from multiprocessing import Pool
-	
-	print("\n" + "="*80)
-	print("FEATURE ENGINEERING PIPELINE DEMO")
-	print("="*80)
-	
-	# Example: Sequential execution
-	print("\n📌 SEQUENTIAL EXECUTION")
-	print("-" * 80)
-	
-	# Load your data
-	df = pd.read_csv(PROCESSED_DATA_DIR / "cleaned_date_merge.csv")
-	df['date'] = pd.to_datetime(df['date'], errors='coerce')
-	df = df.dropna(subset=['sender', 'receiver', 'date', 'label'])
-	df = df.sort_values('date').reset_index(drop=True)
-	
-	engineer = FeatureEngineer(verbose=True)
-	
-	# Compute features sequentially
-	start = time.time()
-	df_graph = engineer.compute_graph_features(df.copy())
-	df_ts = engineer.compute_timeseries_features(df.copy())
-	df_text = engineer.compute_text_features(df.copy())
-	elapsed_sequential = time.time() - start
-	
-	print(f"\n⏱️  Sequential time: {elapsed_sequential:.2f} seconds")
-	
-	# Example: Parallel execution
-	print("\n" + "="*80)
-	print("📌 PARALLEL EXECUTION (3 processes)")
-	print("-" * 80)
-	
-	start = time.time()
-	
-	with Pool(processes=3) as pool:
-		results = [
-			pool.apply_async(compute_graph_features_parallel, (df.copy(),)),
-			pool.apply_async(compute_timeseries_features_parallel, (df.copy(),)),
-			pool.apply_async(compute_text_features_parallel, (df.copy(),))
-		]
-		results = [r.get() for r in results]
-	
-	elapsed_parallel = time.time() - start
-	
-	# Extract results
-	df_graph_parallel = results[0][0]
-	df_ts_parallel = results[1][0]
-	df_text_parallel = results[2][0]
-	
-	print(f"\n⏱️  Parallel time: {elapsed_parallel:.2f} seconds")
-	print(f"🚀 Speedup: {elapsed_sequential/elapsed_parallel:.2f}x")
-	
-	# Save features
-	engineer.save_features(df_graph_parallel, "graph_features_pit.csv")
-	engineer.save_features(df_ts_parallel, "timeseries_features_pit.csv")
-	engineer.save_features(df_text_parallel, "text_features_pit.csv")
-	
-	print("\n✅ Feature engineering complete!")
