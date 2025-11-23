@@ -220,10 +220,10 @@ class ModelTrainer:
                 n_jobs=-1
             ),
             'Naive Bayes': GaussianNB(),
-            'SVM': SVC(
-                random_state=self.random_state,
-                probability=True
-            ),
+            # 'SVM': SVC(
+            #     random_state=self.random_state,
+            #     probability=True
+            # ),
             'K-Nearest Neighbors': KNeighborsClassifier(),
             # 'Gradient Boosting': GradientBoostingClassifier(
             #     random_state=self.random_state
@@ -539,7 +539,7 @@ class ModelTrainer:
         
         # Show meta-learner coefficients
         self._log("\n  Meta-learner coefficients:")
-        for model_name, coef in zip(meta_train_models.keys(), meta_learner.coef_):
+        for model_name, coef in zip(meta_train_models.keys(), meta_learner.coef_[0]):
             self._log(f"    • {model_name:25s}: {coef:+.6f}")
         
         coef_std = np.std(meta_learner.coef_)
